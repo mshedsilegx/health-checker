@@ -83,6 +83,9 @@ func parseOptions(cliContext *cli.Command) (*options.Options, error) {
 	var listener string
 	if cliContext.IsSet("listener") {
 		listener = cliContext.Value("listener").(string)
+		if !strings.Contains(listener, ":") {
+			listener = fmt.Sprintf("%s:%s", DEFAULT_LISTENER_IP_ADDRESS, listener)
+		}
 	} else {
 		listener = fmt.Sprintf("%s:%d", DEFAULT_LISTENER_IP_ADDRESS, DEFAULT_LISTENER_PORT)
 	}
