@@ -5,7 +5,7 @@ import (
 	"github.com/gruntwork-io/health-checker/options"
 	"github.com/gruntwork-io/health-checker/test"
 	"github.com/stretchr/testify/assert"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v3"
 	"strings"
 	"testing"
 )

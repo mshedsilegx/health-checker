@@ -8,7 +8,7 @@ import (
 	"github.com/gruntwork-io/go-commons/logging"
 	"github.com/gruntwork-io/health-checker/options"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v3"
 )
 
 const DEFAULT_LISTENER_IP_ADDRESS = "0.0.0.0"
@@ -16,34 +16,34 @@ const DEFAULT_LISTENER_PORT = 5500
 const DEFAULT_SCRIPT_TIMEOUT_SEC = 5
 const ENV_VAR_NAME_DEBUG_MODE = "HEALTH_CHECKER_DEBUG"
 
-var portFlag = cli.IntSliceFlag{
+var portFlag = &cli.IntSliceFlag{
 	Name:  "port",
 	Usage: fmt.Sprintf("[One of port/script Required] The port number on which a TCP connection will be attempted. Specify one or more times. Example: 8000"),
 }
 
-var scriptFlag = cli.StringSliceFlag{
+var scriptFlag = &cli.StringSliceFlag{
 	Name:  "script",
 	Usage: fmt.Sprintf("[One of port/script Required] The path to script that will be run. Specify one or more times. Example: \"/usr/local/bin/health-check.sh --http-port 8000\""),
 }
 
-var scriptTimeoutFlag = cli.IntFlag{
+var scriptTimeoutFlag = &cli.IntFlag{
 	Name:  "script-timeout",
 	Usage: fmt.Sprintf("[Optional] Timeout, in seconds, to wait for the scripts to complete. Example: 10"),
 	Value: DEFAULT_SCRIPT_TIMEOUT_SEC,
 }
 
-var singleflightFlag = cli.BoolFlag{
+var singleflightFlag = &cli.BoolFlag{
 	Name:  "singleflight",
 	Usage: fmt.Sprintf("[Optional] Enable singleflight mode, which makes concurrent requests share the same check."),
 }
 
-var listenerFlag = cli.StringFlag{
+var listenerFlag = &cli.StringFlag{
 	Name:  "listener",
 	Usage: fmt.Sprintf("[Optional] The IP address and port on which inbound HTTP connections will be accepted."),
 	Value: fmt.Sprintf("%s:%d", DEFAULT_LISTENER_IP_ADDRESS, DEFAULT_LISTENER_PORT),
 }
 
-var logLevelFlag = cli.StringFlag{
+var logLevelFlag = &cli.StringFlag{
 	Name:  "log-level",
 	Usage: fmt.Sprintf("[Optional] Set the log level to `LEVEL`. Must be one of: %v", logrus.AllLevels),
 	Value: logrus.InfoLevel.String(),
