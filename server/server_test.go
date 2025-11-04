@@ -1,7 +1,7 @@
 package server
 
 import (
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/gruntwork-io/go-commons/logging"
 	"github.com/gruntwork-io/health-checker/options"
 	"github.com/gruntwork-io/health-checker/test"
 	"github.com/sirupsen/logrus"
@@ -185,7 +184,9 @@ func TestSingleflight(t *testing.T) {
 
 			// Accept incoming connections, and count how many we receive
 			go handleRequests(t, l, &requestCount)
-			defer l.Close()
+			defer func() {
+				_ = l.Close()
+			}()
 
 			// Fire the request off to /bin/sleep to ensure it takes a while
 			opts := createOptionsForTest(t, 10, []string{"/bin/sleep 1"}, test.DEFAULT_LISTENER_ADDRESS, []int{port})
@@ -208,7 +209,7 @@ func TestSingleflight(t *testing.T) {
 						assert.FailNow(t, "failed to perform HTTP request: %v", err)
 					}
 
-					ioutil.ReadAll(resp.Body)
+					_, _ = io.ReadAll(resp.Body)
 					wg.Done()
 				}()
 			}
@@ -232,7 +233,7 @@ func closeListeners(t *testing.T, listeners []net.Listener) {
 func handleRequests(t *testing.T, l net.Listener, counter *int32) {
 	for {
 		// Listen for an incoming connection.
-		l.Accept()
+		_, _ = l.Accept()
 		// We don't log these when testing because we're forcibly closing the socket
 		// from the outside. If you're debugging and wish to enable the logging,
 		// uncomment the lines below
@@ -248,7 +249,7 @@ func handleRequests(t *testing.T, l net.Listener, counter *int32) {
 }
 
 func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, listener string, ports []int) *options.Options {
-	logger := logging.GetLogger("health-checker")
+	logger := logrus.New()
 	logger.Out = os.Stdout
 	logger.Level = logrus.InfoLevel
 

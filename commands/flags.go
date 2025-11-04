@@ -5,7 +5,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gruntwork-io/go-commons/logging"
 	"github.com/gruntwork-io/health-checker/options"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v3"
@@ -16,84 +15,80 @@ const DEFAULT_LISTENER_PORT = 5500
 const DEFAULT_SCRIPT_TIMEOUT_SEC = 5
 const ENV_VAR_NAME_DEBUG_MODE = "HEALTH_CHECKER_DEBUG"
 
-var portFlag = &cli.IntSliceFlag{
-	Name:  "port",
-	Usage: fmt.Sprintf("[One of port/script Required] The port number on which a TCP connection will be attempted. Specify one or more times. Example: 8000"),
-}
-
-var scriptFlag = &cli.StringSliceFlag{
-	Name:  "script",
-	Usage: fmt.Sprintf("[One of port/script Required] The path to script that will be run. Specify one or more times. Example: \"/usr/local/bin/health-check.sh --http-port 8000\""),
-}
-
-var scriptTimeoutFlag = &cli.IntFlag{
-	Name:  "script-timeout",
-	Usage: fmt.Sprintf("[Optional] Timeout, in seconds, to wait for the scripts to complete. Example: 10"),
-	Value: DEFAULT_SCRIPT_TIMEOUT_SEC,
-}
-
-var singleflightFlag = &cli.BoolFlag{
-	Name:  "singleflight",
-	Usage: fmt.Sprintf("[Optional] Enable singleflight mode, which makes concurrent requests share the same check."),
-}
-
-var listenerFlag = &cli.StringFlag{
-	Name:  "listener",
-	Usage: fmt.Sprintf("[Optional] The IP address and port on which inbound HTTP connections will be accepted."),
-	Value: fmt.Sprintf("%s:%d", DEFAULT_LISTENER_IP_ADDRESS, DEFAULT_LISTENER_PORT),
-}
-
-var logLevelFlag = &cli.StringFlag{
-	Name:  "log-level",
-	Usage: fmt.Sprintf("[Optional] Set the log level to `LEVEL`. Must be one of: %v", logrus.AllLevels),
-	Value: logrus.InfoLevel.String(),
-}
-
-var defaultFlags = []cli.Flag{
-	portFlag,
-	scriptFlag,
-	scriptTimeoutFlag,
-	singleflightFlag,
-	listenerFlag,
-	logLevelFlag,
+func getDefaultFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.IntSliceFlag{
+			Name:  "port",
+			Usage: "[One of port/script Required] The port number on which a TCP connection will be attempted. Specify one or more times. Example: 8000",
+		},
+		&cli.StringSliceFlag{
+			Name:  "script",
+			Usage: "[One of port/script Required] The path to script that will be run. Specify one or more times. Example: \"/usr/local/bin/health-check.sh --http-port 8000\"",
+		},
+		&cli.IntFlag{
+			Name:  "script-timeout",
+			Usage: "[Optional] Timeout, in seconds, to wait for the scripts to complete. Example: 10",
+			Value: DEFAULT_SCRIPT_TIMEOUT_SEC,
+		},
+		&cli.BoolFlag{
+			Name:  "singleflight",
+			Usage: "[Optional] Enable singleflight mode, which makes concurrent requests share the same check.",
+		},
+		&cli.StringFlag{
+			Name:  "listener",
+			Usage: "[Optional] The IP address and port on which inbound HTTP connections will be accepted.",
+			Value: fmt.Sprintf("%s:%d", DEFAULT_LISTENER_IP_ADDRESS, DEFAULT_LISTENER_PORT),
+		},
+		&cli.StringFlag{
+			Name:  "log-level",
+			Usage: fmt.Sprintf("[Optional] Set the log level to `LEVEL`. Must be one of: %v", logrus.AllLevels),
+			Value: logrus.InfoLevel.String(),
+		},
+	}
 }
 
 // Return true if no options at all were passed to the CLI. Note that we are specifically testing for flags, some of which
 // are required, not just args.
-func allCliOptionsEmpty(cliContext *cli.Context) bool {
+func allCliOptionsEmpty(cliContext *cli.Command) bool {
 	return cliContext.NumFlags() == 0
 }
 
 // Parse and validate all CLI options
-func parseOptions(cliContext *cli.Context) (*options.Options, error) {
-	logger := logging.GetLogger("health-checker")
+func parseOptions(cliContext *cli.Command) (*options.Options, error) {
+	logger := logrus.New()
 
 	// By default logrus logs to stderr. But since most output in this tool is informational, we default to stdout.
 	logger.Out = os.Stdout
 
-	logLevel := cliContext.String(logLevelFlag.Name)
+	logLevel := cliContext.Value("log-level").(string)
 	level, err := logrus.ParseLevel(logLevel)
 	if err != nil {
 		return nil, InvalidLogLevel(logLevel)
 	}
 	logger.SetLevel(level)
 
-	ports := cliContext.IntSlice("port")
+	ports := cliContext.Value("port").([]int)
 
-	scriptArr := cliContext.StringSlice("script")
+	scriptArr := cliContext.Value("script").([]string)
 	scripts := options.ParseScripts(scriptArr)
 
 	if len(ports) == 0 && len(scripts) == 0 {
-		return nil, OneOfParamsRequired{portFlag.Name, scriptFlag.Name}
+		return nil, OneOfParamsRequired{"port", "script"}
 	}
 
-	singleflight := cliContext.Bool("singleflight")
+	singleflight := cliContext.Value("singleflight").(bool)
 
-	scriptTimeout := cliContext.Int("script-timeout")
+	scriptTimeout := cliContext.Value("script-timeout").(int)
 
-	listener := cliContext.String("listener")
+	var listener string
+	if cliContext.IsSet("listener") {
+		listener = cliContext.Value("listener").(string)
+	} else {
+		listener = fmt.Sprintf("%s:%d", DEFAULT_LISTENER_IP_ADDRESS, DEFAULT_LISTENER_PORT)
+	}
+
 	if listener == "" {
-		return nil, MissingParam(listenerFlag.Name)
+		return nil, MissingParam("listener")
 	}
 
 	return &options.Options{

@@ -139,7 +139,9 @@ func attemptTcpConnection(port int, opts *options.Options) error {
 		return err
 	}
 
-	defer conn.Close()
+	defer func() {
+		_ = conn.Close()
+	}()
 
 	return nil
 }
