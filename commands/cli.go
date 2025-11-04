@@ -32,7 +32,7 @@ func CreateCli(version string) *cli.App {
 
 	app.Name = "health-checker"
 	app.HelpName = app.Name
-//	app.Author = "Gruntwork, Inc. <www.gruntwork.io> | https://github.com/gruntwork-io/health-checker"
+	//	app.Author = "Gruntwork, Inc. <www.gruntwork.io> | https://github.com/gruntwork-io/health-checker"
 	app.Version = version
 	app.Usage = "A simple HTTP server that will return 200 OK if the configured checks are all successful."
 	app.Commands = nil

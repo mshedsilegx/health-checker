@@ -1,8 +1,8 @@
 package main
 
 import (
-  "os"
-  "github.com/gruntwork-io/health-checker/commands"
+	"github.com/gruntwork-io/health-checker/commands"
+	"os"
 )
 
 // This variable is set at build time using -ldflags parameters. For example, we typically set this flag in circle.yml
@@ -15,10 +15,10 @@ var VERSION string
 
 // This is the main entry point for the app.
 func main() {
-  app := commands.CreateCli(VERSION)
-  err := app.Run(os.Args) // Use app.Run instead of entrypoint.RunApp
-  if err != nil {
-    // Handle error appropriately
-    os.Exit(1)
-  }
+	app := commands.CreateCli(VERSION)
+	err := app.Run(os.Args) // Use app.Run instead of entrypoint.RunApp
+	if err != nil {
+		// Handle error appropriately
+		os.Exit(1)
+	}
 }
