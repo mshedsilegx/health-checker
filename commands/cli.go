@@ -10,9 +10,9 @@ import (
 // Create the CLI app with all commands (in this case a single one!), flags, and usage text configured.
 func CreateCli(version string) *cli.Command {
 	cmd := &cli.Command{
-		Name:    "health-checker",
-		Version: version,
-		Usage:   "A simple HTTP server that will return 200 OK if the configured checks are all successful.",
+		Name:     "health-checker",
+		Version:  version,
+		Usage:    "A simple HTTP server that will return 200 OK if the configured checks are all successful.",
 		Commands: nil,
 		Flags:    getDefaultFlags(),
 		Action:   runHealthChecker,
