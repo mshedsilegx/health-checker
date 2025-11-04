@@ -1,4 +1,4 @@
-module criticalsys/health-checker
+module github.com/gruntwork-io/health-checker
 
 go 1.24.0
 
