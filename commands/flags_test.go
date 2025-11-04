@@ -1,7 +1,7 @@
 package commands
 
 import (
-	"flag"
+	"context"
 	"github.com/gruntwork-io/health-checker/options"
 	"github.com/gruntwork-io/health-checker/test"
 	"github.com/stretchr/testify/assert"
@@ -35,7 +35,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			"invalid listener",
 			[]string{"--listener"},
 			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, defaultListener(), []int{8080}),
-			"Missing required parameter --listener",
+			"Missing required parameter, one of",
 		},
 		{
 			"valid listener",
@@ -113,15 +113,13 @@ func assertOptionsEqual(t *testing.T, expected options.Options, actual options.O
 	assert.Equal(t, expected.Ports, actual.Ports, msgAndArgs...)
 }
 
-func createContextForTesting(args []string) *cli.Context {
-	flagSet := flag.NewFlagSet("test", flag.ContinueOnError)
+func createContextForTesting(args []string) *cli.Command {
 	c := CreateCli("0.0.0")
-	ctx := cli.NewContext(c, flagSet, nil)
-	for _, f := range c.Flags {
-		f.Apply(flagSet)
+	c.Action = func(ctx context.Context, cmd *cli.Command) error {
+		return nil
 	}
-	flagSet.Parse(args)
-	return ctx
+	_ = c.Run(context.Background(), append([]string{"health-checker"}, args...))
+	return c
 }
 
 func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, listener string, ports []int) *options.Options {
