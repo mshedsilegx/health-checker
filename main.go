@@ -11,7 +11,7 @@ import (
 // build-go-binaries --app-name my-app --dest-path bin --ld-flags "-X main.VERSION=$CIRCLE_TAG"
 //
 // For more info, see: http://stackoverflow.com/a/11355611/483528
-var VERSION string
+var VERSION = "dev"
 
 // This is the main entry point for the app.
 func main() {
