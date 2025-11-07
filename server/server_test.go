@@ -146,6 +146,19 @@ func TestParseChecksFromConfig(t *testing.T) {
 	}
 }
 
+func TestRaceCondition(t *testing.T) {
+	t.Parallel()
+
+	// Run this test multiple times to increase the chances of detecting a race condition
+	for i := 0; i < 100; i++ {
+		// All these checks should fail, but run them in parallel.
+		// If there is a race condition, sometimes allChecksOk will be true.
+		opts := createOptionsForTest(t, 5, []string{}, "0.0.0.0:12345", []int{12346, 12347, 12348, 12349, 12350})
+		response := runChecks(opts)
+		assert.Equal(t, http.StatusGatewayTimeout, response.StatusCode)
+	}
+}
+
 func TestSingleflight(t *testing.T) {
 
 	testCases := []struct {

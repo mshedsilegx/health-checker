@@ -10,6 +10,7 @@ import (
 type Options struct {
 	Ports         []int
 	Scripts       []Script
+	TcpTimeout    int
 	ScriptTimeout int
 	Singleflight  bool
 	Listener      string

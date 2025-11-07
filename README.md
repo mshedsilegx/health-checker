@@ -54,7 +54,8 @@ health-checker [options]
 | Option | Description | Default
 | ------ | ----------- | -------
 | `--port` | The port number on which a TCP connection will be attempted. Specify one or more times. | |
-| `--listener` |  The IP address and port on which inbound HTTP connections will be accepted. | `0.0.0.0:5000`
+| `--tcp-timeout` | Timeout, in seconds, to wait for the TCP connections to complete. | `5` |
+| `--listener` |  The IP address and port on which inbound HTTP connections will be accepted. | `0.0.0.0:5500`
 | `--log-level` | Set the log level to LEVEL. Must be one of: `panic`, `fatal`, `error,` `warning`, `info`, or `debug` | `info`
 | `--help` | Show the help screen | |
 | `--script` | Path to script to run - will pass if it completes within configured timeout with a zero exit status. Specify one or more times. | |

@@ -40,6 +40,7 @@ func CreateCli(version string) *cli.Command {
 	return cmd
 }
 
+// nolint: gocyclo
 func runHealthChecker(ctx context.Context, cliContext *cli.Command) error {
 	if allCliOptionsEmpty(cliContext) {
 		cli.ShowRootCommandHelpAndExit(cliContext, 0)

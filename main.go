@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"github.com/gruntwork-io/health-checker/commands"
 	"os"
 )
@@ -16,7 +17,8 @@ var VERSION = "dev"
 // This is the main entry point for the app.
 func main() {
 	app := commands.CreateCli(VERSION)
-	err := app.Run(os.Args) // Use app.Run instead of entrypoint.RunApp
+	ctx := context.Background()
+	err := app.Run(ctx, os.Args) // Use app.Run instead of entrypoint.RunApp
 	if err != nil {
 		// Handle error appropriately
 		os.Exit(1)

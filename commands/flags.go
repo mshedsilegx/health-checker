@@ -12,6 +12,7 @@ import (
 
 const DEFAULT_LISTENER_IP_ADDRESS = "0.0.0.0"
 const DEFAULT_LISTENER_PORT = 5500
+const DEFAULT_TCP_TIMEOUT_SEC = 5
 const DEFAULT_SCRIPT_TIMEOUT_SEC = 5
 const ENV_VAR_NAME_DEBUG_MODE = "HEALTH_CHECKER_DEBUG"
 
@@ -24,6 +25,11 @@ func getDefaultFlags() []cli.Flag {
 		&cli.StringSliceFlag{
 			Name:  "script",
 			Usage: "[One of port/script Required] The path to script that will be run. Specify one or more times. Example: \"/usr/local/bin/health-check.sh --http-port 8000\"",
+		},
+		&cli.IntFlag{
+			Name:  "tcp-timeout",
+			Usage: "[Optional] Timeout, in seconds, to wait for the TCP connections to complete. Example: 10",
+			Value: DEFAULT_TCP_TIMEOUT_SEC,
 		},
 		&cli.IntFlag{
 			Name:  "script-timeout",
@@ -78,6 +84,7 @@ func parseOptions(cliContext *cli.Command) (*options.Options, error) {
 
 	singleflight := cliContext.Value("singleflight").(bool)
 
+	tcpTimeout := cliContext.Value("tcp-timeout").(int)
 	scriptTimeout := cliContext.Value("script-timeout").(int)
 
 	var listener string
@@ -97,6 +104,7 @@ func parseOptions(cliContext *cli.Command) (*options.Options, error) {
 	return &options.Options{
 		Ports:         ports,
 		Scripts:       scripts,
+		TcpTimeout:    tcpTimeout,
 		ScriptTimeout: scriptTimeout,
 		Singleflight:  singleflight,
 		Listener:      listener,

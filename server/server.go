@@ -69,24 +69,52 @@ func httpHandler(opts *options.Options) http.HandlerFunc {
 // Check that we can open a TPC connection to all the ports in opts.Ports
 func runChecks(opts *options.Options) *httpResponse {
 	logger := opts.Logger
+
+	// We use a mutex to protect access to allChecksOk so that it can be safely updated by multiple goroutines
 	allChecksOk := true
+	var mutex = &sync.Mutex{}
 
 	var waitGroup = sync.WaitGroup{}
+
+	runTcpChecks(opts, &waitGroup, &allChecksOk, mutex)
+	runScriptChecks(opts, &waitGroup, &allChecksOk, mutex)
+
+	waitGroup.Wait()
+
+	if allChecksOk {
+		logger.Infof("All health checks passed. Returning HTTP 200 response.\n")
+		return &httpResponse{StatusCode: http.StatusOK, Body: "OK"}
+	} else {
+		logger.Infof("At least one health check failed. Returning HTTP 504 response.\n")
+		return &httpResponse{StatusCode: http.StatusGatewayTimeout, Body: "At least one health check failed"}
+	}
+}
+
+// Concurrently run all the TCP health checks
+func runTcpChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk *bool, mutex *sync.Mutex) {
+	logger := opts.Logger
 
 	for _, port := range opts.Ports {
 		waitGroup.Add(1)
 		go func(port int) {
+			defer waitGroup.Done()
+
 			err := attemptTcpConnection(port, opts)
 			if err != nil {
 				logger.Warnf("TCP connection to port %d FAILED: %s", port, err)
-				allChecksOk = false
+				mutex.Lock()
+				*allChecksOk = false
+				mutex.Unlock()
 			} else {
 				logger.Infof("TCP connection to port %d successful", port)
 			}
-
-			waitGroup.Done()
 		}(port)
 	}
+}
+
+// Concurrently run all the script health checks
+func runScriptChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk *bool, mutex *sync.Mutex) {
+	logger := opts.Logger
 
 	for _, script := range opts.Scripts {
 		waitGroup.Add(1)
@@ -109,32 +137,24 @@ func runChecks(opts *options.Options) *httpResponse {
 			if err != nil {
 				logger.Warnf("Script %v FAILED: %s", script.Name, err)
 				logger.Warnf("Command output: %s", output)
-				allChecksOk = false
+				mutex.Lock()
+				*allChecksOk = false
+				mutex.Unlock()
 			} else {
 				logger.Infof("Script %v successful", script)
 			}
 		}(script)
-	}
-
-	waitGroup.Wait()
-
-	if allChecksOk {
-		logger.Infof("All health checks passed. Returning HTTP 200 response.\n")
-		return &httpResponse{StatusCode: http.StatusOK, Body: "OK"}
-	} else {
-		logger.Infof("At least one health check failed. Returning HTTP 504 response.\n")
-		return &httpResponse{StatusCode: http.StatusGatewayTimeout, Body: "At least one health check failed"}
 	}
 }
 
 // Attempt to open a TCP connection to the given port
 func attemptTcpConnection(port int, opts *options.Options) error {
 	logger := opts.Logger
-	logger.Infof("Attempting to connect to port %d via TCP...", port)
+	logger.Infof("Attempting to connect to port %d via TCP with a timeout of %v seconds...", port, opts.TcpTimeout)
 
-	defaultTimeout := time.Second * 5
+	timeout := time.Second * time.Duration(opts.TcpTimeout)
 
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("0.0.0.0:%d", port), defaultTimeout)
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("0.0.0.0:%d", port), timeout)
 	if err != nil {
 		return err
 	}
