@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"sync"
 	"time"
 
@@ -19,12 +22,77 @@ type httpResponse struct {
 	Body       string
 }
 
+type JsonResult struct {
+	Status  string        `json:"status"`
+	Message MessageResult `json:"message"`
+}
+
+type MessageResult struct {
+	Code    int           `json:"code"`
+	Content ContentResult `json:"content"`
+}
+
+type ContentResult struct {
+	FailedTcpPorts   []int    `json:"failed_tcp_ports"`
+	SuccessTcpPorts  []int    `json:"success_tcp_ports"`
+	FailedHttpPorts  []int    `json:"failed_http_ports"`
+	SuccessHttpPorts []int    `json:"success_http_ports"`
+	FailedHttpUrls   []string `json:"failed_http_urls"`
+	SuccessHttpUrls  []string `json:"success_http_urls"`
+	ScriptResults    []string `json:"script_results"`
+}
+
 func StartHttpServer(opts *options.Options) error {
 	http.HandleFunc("/", httpHandler(opts))
 
 	err := http.ListenAndServe(opts.Listener, nil)
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// Attempt to open a HTTP connection to the given url
+func attemptHttpConnection(url string, opts *options.Options) error {
+	logger := opts.Logger
+	logger.Infof("Attempting to connect to %s via HTTP...", url)
+
+	timeout := time.Second * time.Duration(opts.HttpTimeout)
+	client := http.Client{
+		Timeout: timeout,
+	}
+
+	resp, err := client.Get(url)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		err := resp.Body.Close()
+		if err != nil {
+			opts.Logger.Warnf("error closing response body: %s", err)
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
+		return fmt.Errorf("expected status code 200 or 302, but got %d", resp.StatusCode)
+	}
+
+	if opts.HttpMatch != "" {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+
+		match, err := regexp.Match(opts.HttpMatch, body)
+		if err != nil {
+			return err
+		}
+
+		if !match {
+			return fmt.Errorf("could not find string %s in response body", opts.HttpMatch)
+		}
 	}
 
 	return nil
@@ -76,10 +144,32 @@ func runChecks(opts *options.Options) *httpResponse {
 
 	var waitGroup = sync.WaitGroup{}
 
-	runTcpChecks(opts, &waitGroup, &allChecksOk, mutex)
-	runScriptChecks(opts, &waitGroup, &allChecksOk, mutex)
+	failedTcpPorts := make(chan int, len(opts.Ports))
+	successTcpPorts := make(chan int, len(opts.Ports))
+	failedHttpPorts := make(chan int, len(opts.HttpPorts))
+	successHttpPorts := make(chan int, len(opts.HttpPorts))
+	failedHttpUrls := make(chan string, 1)
+	successHttpUrls := make(chan string, 1)
+	scriptResults := make(chan string, len(opts.Scripts))
+
+	runTcpChecks(opts, &waitGroup, &allChecksOk, mutex, failedTcpPorts, successTcpPorts)
+	runHttpChecks(opts, &waitGroup, &allChecksOk, mutex, failedHttpPorts, successHttpPorts)
+	runHttpUrlChecks(opts, &waitGroup, &allChecksOk, mutex, failedHttpUrls, successHttpUrls)
+	runScriptChecks(opts, &waitGroup, &allChecksOk, mutex, scriptResults)
 
 	waitGroup.Wait()
+
+	close(failedTcpPorts)
+	close(successTcpPorts)
+	close(failedHttpPorts)
+	close(successHttpPorts)
+	close(failedHttpUrls)
+	close(successHttpUrls)
+	close(scriptResults)
+
+	if opts.ReturnJson {
+		return &httpResponse{StatusCode: http.StatusOK, Body: toJson(allChecksOk, failedTcpPorts, successTcpPorts, failedHttpPorts, successHttpPorts, failedHttpUrls, successHttpUrls, scriptResults)}
+	}
 
 	if allChecksOk {
 		logger.Infof("All health checks passed. Returning HTTP 200 response.\n")
@@ -91,7 +181,7 @@ func runChecks(opts *options.Options) *httpResponse {
 }
 
 // Concurrently run all the TCP health checks
-func runTcpChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk *bool, mutex *sync.Mutex) {
+func runTcpChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk *bool, mutex *sync.Mutex, failedTcpPorts chan int, successTcpPorts chan int) {
 	logger := opts.Logger
 
 	for _, port := range opts.Ports {
@@ -105,15 +195,42 @@ func runTcpChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk 
 				mutex.Lock()
 				*allChecksOk = false
 				mutex.Unlock()
+				failedTcpPorts <- port
 			} else {
 				logger.Infof("TCP connection to port %d successful", port)
+				successTcpPorts <- port
 			}
 		}(port)
 	}
 }
 
 // Concurrently run all the script health checks
-func runScriptChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk *bool, mutex *sync.Mutex) {
+func runHttpChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk *bool, mutex *sync.Mutex, failedHttpPorts chan int, successHttpPorts chan int) {
+	logger := opts.Logger
+
+	for _, port := range opts.HttpPorts {
+		waitGroup.Add(1)
+		go func(port int) {
+			defer waitGroup.Done()
+
+			url := fmt.Sprintf("http://127.0.0.1:%d", port)
+			err := attemptHttpConnection(url, opts)
+			if err != nil {
+				logger.Warnf("HTTP connection to port %d FAILED: %s", port, err)
+				mutex.Lock()
+				*allChecksOk = false
+				mutex.Unlock()
+				failedHttpPorts <- port
+			} else {
+				logger.Infof("HTTP connection to port %d successful", port)
+				successHttpPorts <- port
+			}
+		}(port)
+	}
+}
+
+// Concurrently run all the script health checks
+func runScriptChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk *bool, mutex *sync.Mutex, scriptResults chan string) {
 	logger := opts.Logger
 
 	for _, script := range opts.Scripts {
@@ -140,10 +257,35 @@ func runScriptChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecks
 				mutex.Lock()
 				*allChecksOk = false
 				mutex.Unlock()
+				scriptResults <- string(output)
 			} else {
 				logger.Infof("Script %v successful", script)
+				scriptResults <- string(output)
 			}
 		}(script)
+	}
+}
+
+func runHttpUrlChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk *bool, mutex *sync.Mutex, failedHttpUrls chan string, successHttpUrls chan string) {
+	logger := opts.Logger
+
+	if opts.HttpUrl != "" {
+		waitGroup.Add(1)
+		go func(url string) {
+			defer waitGroup.Done()
+
+			err := attemptHttpConnection(url, opts)
+			if err != nil {
+				logger.Warnf("HTTP connection to URL %s FAILED: %s", url, err)
+				mutex.Lock()
+				*allChecksOk = false
+				mutex.Unlock()
+				failedHttpUrls <- url
+			} else {
+				logger.Infof("HTTP connection to URL %s successful", url)
+				successHttpUrls <- url
+			}
+		}(opts.HttpUrl)
 	}
 }
 
@@ -174,4 +316,60 @@ func writeHttpResponse(w http.ResponseWriter, resp *httpResponse) error {
 	}
 
 	return nil
+}
+
+func toJson(allChecksOk bool, failedTcpPorts chan int, successTcpPorts chan int, failedHttpPorts chan int, successHttpPorts chan int, failedHttpUrls chan string, successHttpUrls chan string, scriptResults chan string) string {
+	status := "OK"
+	code := 200
+	if !allChecksOk {
+		status = "FAIL"
+		code = 504
+	}
+
+	content := ContentResult{
+		FailedTcpPorts:   []int{},
+		SuccessTcpPorts:  []int{},
+		FailedHttpPorts:  []int{},
+		SuccessHttpPorts: []int{},
+		FailedHttpUrls:   []string{},
+		SuccessHttpUrls:  []string{},
+		ScriptResults:    []string{},
+	}
+
+	for port := range failedTcpPorts {
+		content.FailedTcpPorts = append(content.FailedTcpPorts, port)
+	}
+	for port := range successTcpPorts {
+		content.SuccessTcpPorts = append(content.SuccessTcpPorts, port)
+	}
+	for port := range failedHttpPorts {
+		content.FailedHttpPorts = append(content.FailedHttpPorts, port)
+	}
+	for port := range successHttpPorts {
+		content.SuccessHttpPorts = append(content.SuccessHttpPorts, port)
+	}
+	for url := range failedHttpUrls {
+		content.FailedHttpUrls = append(content.FailedHttpUrls, url)
+	}
+	for url := range successHttpUrls {
+		content.SuccessHttpUrls = append(content.SuccessHttpUrls, url)
+	}
+	for result := range scriptResults {
+		content.ScriptResults = append(content.ScriptResults, result)
+	}
+
+	jsonResult := JsonResult{
+		Status: status,
+		Message: MessageResult{
+			Code:    code,
+			Content: content,
+		},
+	}
+
+	jsonBytes, err := json.Marshal(jsonResult)
+	if err != nil {
+		return "{\"status\": \"FAIL\", \"message\": {\"code\": 500, \"content\": \"Failed to marshal JSON\"}}"
+	}
+
+	return string(jsonBytes)
 }

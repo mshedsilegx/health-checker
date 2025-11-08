@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/gruntwork-io/health-checker/options"
@@ -13,14 +14,31 @@ import (
 const DEFAULT_LISTENER_IP_ADDRESS = "0.0.0.0"
 const DEFAULT_LISTENER_PORT = 5500
 const DEFAULT_TCP_TIMEOUT_SEC = 5
+const DEFAULT_HTTP_TIMEOUT_SEC = 5
 const DEFAULT_SCRIPT_TIMEOUT_SEC = 5
 const ENV_VAR_NAME_DEBUG_MODE = "HEALTH_CHECKER_DEBUG"
 
 func getDefaultFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntSliceFlag{
-			Name:  "port",
-			Usage: "[One of port/script Required] The port number on which a TCP connection will be attempted. Specify one or more times. Example: 8000",
+			Name:  "tcp-port",
+			Usage: "[One of tcp-port/script Required] The port number on which a TCP connection will be attempted. Specify one or more times. Example: 8000",
+		},
+		&cli.StringFlag{
+			Name:  "tcp-port-range",
+			Usage: "[One of tcp-port/script Required] A range of port numbers on which a TCP connection will be attempted. Specify a comma-separated list (e.g., 80,8080) or a range (e.g., 8000-8005).",
+		},
+		&cli.IntSliceFlag{
+			Name:  "http-port",
+			Usage: "[One of http-port/script Required] The port number on which an HTTP connection will be attempted. Specify one or more times. Example: 8000",
+		},
+		&cli.StringFlag{
+			Name:  "http-port-range",
+			Usage: "[One of http-port/script Required] A range of port numbers on which an HTTP connection will be attempted. Specify a comma-separated list (e.g., 80,8080) or a range (e.g., 8000-8005).",
+		},
+		&cli.StringFlag{
+			Name:  "http-url",
+			Usage: "[One of http-url/script Required] A URL on which an HTTP connection will be attempted.",
 		},
 		&cli.StringSliceFlag{
 			Name:  "script",
@@ -30,6 +48,15 @@ func getDefaultFlags() []cli.Flag {
 			Name:  "tcp-timeout",
 			Usage: "[Optional] Timeout, in seconds, to wait for the TCP connections to complete. Example: 10",
 			Value: DEFAULT_TCP_TIMEOUT_SEC,
+		},
+		&cli.IntFlag{
+			Name:  "http-timeout",
+			Usage: "[Optional] Timeout, in seconds, to wait for the HTTP connections to complete. Example: 10",
+			Value: DEFAULT_HTTP_TIMEOUT_SEC,
+		},
+		&cli.StringFlag{
+			Name:  "http-match",
+			Usage: "[Optional] A string or regexp to search for in the HTTP response. If the string is found, the check is successful.",
 		},
 		&cli.IntFlag{
 			Name:  "script-timeout",
@@ -49,6 +76,10 @@ func getDefaultFlags() []cli.Flag {
 			Name:  "log-level",
 			Usage: fmt.Sprintf("[Optional] Set the log level to `LEVEL`. Must be one of: %v", logrus.AllLevels),
 			Value: logrus.InfoLevel.String(),
+		},
+		&cli.BoolFlag{
+			Name:  "msg",
+			Usage: "[Optional] Return a JSON object with a detailed status and message instead of plain text.",
 		},
 	}
 }
@@ -73,18 +104,37 @@ func parseOptions(cliContext *cli.Command) (*options.Options, error) {
 	}
 	logger.SetLevel(level)
 
-	ports := cliContext.Value("port").([]int)
+	ports := cliContext.Value("tcp-port").([]int)
+	portRange := cliContext.Value("tcp-port-range").(string)
+	rangePorts, err := parsePortRange(portRange)
+	if err != nil {
+		return nil, err
+	}
+	ports = append(ports, rangePorts...)
+
+	httpPorts := cliContext.Value("http-port").([]int)
+	httpPortRange := cliContext.Value("http-port-range").(string)
+	httpRangePorts, err := parsePortRange(httpPortRange)
+	if err != nil {
+		return nil, err
+	}
+	httpPorts = append(httpPorts, httpRangePorts...)
+	httpUrl := cliContext.Value("http-url").(string)
 
 	scriptArr := cliContext.Value("script").([]string)
 	scripts := options.ParseScripts(scriptArr)
 
-	if len(ports) == 0 && len(scripts) == 0 {
-		return nil, OneOfParamsRequired{"port", "script"}
+	if len(ports) == 0 && len(httpPorts) == 0 && httpUrl == "" && len(scripts) == 0 {
+		return nil, OneOfParamsRequired{Params: []string{"tcp-port", "http-port", "http-url", "script"}}
 	}
 
 	singleflight := cliContext.Value("singleflight").(bool)
 
+	returnJson := cliContext.Value("msg").(bool)
+
 	tcpTimeout := cliContext.Value("tcp-timeout").(int)
+	httpTimeout := cliContext.Value("http-timeout").(int)
+	httpMatch := cliContext.Value("http-match").(string)
 	scriptTimeout := cliContext.Value("script-timeout").(int)
 
 	var listener string
@@ -103,10 +153,15 @@ func parseOptions(cliContext *cli.Command) (*options.Options, error) {
 
 	return &options.Options{
 		Ports:         ports,
+		HttpPorts:     httpPorts,
+		HttpUrl:       httpUrl,
 		Scripts:       scripts,
 		TcpTimeout:    tcpTimeout,
+		HttpTimeout:   httpTimeout,
+		HttpMatch:     httpMatch,
 		ScriptTimeout: scriptTimeout,
 		Singleflight:  singleflight,
+		ReturnJson:    returnJson,
 		Listener:      listener,
 		Logger:        logger,
 	}, nil
@@ -136,10 +191,57 @@ func (paramName MissingParam) Error() string {
 }
 
 type OneOfParamsRequired struct {
-	param1 string
-	param2 string
+	Params []string
 }
 
 func (paramNames OneOfParamsRequired) Error() string {
-	return fmt.Sprintf("Missing required parameter, one of --%s / --%s required", string(paramNames.param1), string(paramNames.param2))
+	paramStrings := []string{}
+	for _, param := range paramNames.Params {
+		paramStrings = append(paramStrings, fmt.Sprintf("--%s", param))
+	}
+	return fmt.Sprintf("Missing required parameter, one of %s is required", strings.Join(paramStrings, " / "))
+}
+
+func parsePortRange(portRange string) ([]int, error) {
+	if portRange == "" {
+		return nil, nil
+	}
+
+	var ports []int
+	parts := strings.Split(portRange, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if strings.Contains(part, "-") {
+			rangeParts := strings.Split(part, "-")
+			if len(rangeParts) != 2 {
+				return nil, fmt.Errorf("invalid port range: %s", part)
+			}
+
+			start, err := strconv.Atoi(rangeParts[0])
+			if err != nil {
+				return nil, fmt.Errorf("invalid port number: %s", rangeParts[0])
+			}
+
+			end, err := strconv.Atoi(rangeParts[1])
+			if err != nil {
+				return nil, fmt.Errorf("invalid port number: %s", rangeParts[1])
+			}
+
+			if start > end {
+				return nil, fmt.Errorf("invalid port range: %d-%d", start, end)
+			}
+
+			for i := start; i <= end; i++ {
+				ports = append(ports, i)
+			}
+		} else {
+			port, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid port number: %s", part)
+			}
+			ports = append(ports, port)
+		}
+	}
+
+	return ports, nil
 }

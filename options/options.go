@@ -9,10 +9,15 @@ import (
 // The options accepted by this CLI tool
 type Options struct {
 	Ports         []int
+	HttpPorts     []int
+	HttpUrl       string
 	Scripts       []Script
 	TcpTimeout    int
+	HttpTimeout   int
+	HttpMatch     string
 	ScriptTimeout int
 	Singleflight  bool
+	ReturnJson    bool
 	Listener      string
 	Logger        *logrus.Logger
 }

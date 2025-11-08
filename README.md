@@ -53,14 +53,21 @@ health-checker [options]
 
 | Option | Description | Default
 | ------ | ----------- | -------
-| `--port` | The port number on which a TCP connection will be attempted. Specify one or more times. | |
+| `--tcp-port` | The port number on which a TCP connection will be attempted. Specify one or more times. | |
+| `--tcp-port-range` | A range of port numbers on which a TCP connection will be attempted. Specify a comma-separated list (e.g., 80,8080) or a range (e.g., 8000-8005). | |
 | `--tcp-timeout` | Timeout, in seconds, to wait for the TCP connections to complete. | `5` |
+| `--http-port` | The port number on which an HTTP connection will be attempted. Specify one or more times. | |
+| `--http-port-range` | A range of port numbers on which an HTTP connection will be attempted. Specify a comma-separated list (e.g., 80,8080) or a range (e.g., 8000-8005). | |
+| `--http-url` | A URL on which an HTTP connection will be attempted. | |
+| `--http-timeout` | Timeout, in seconds, to wait for the HTTP connections to complete. | `5` |
+| `--http-match` | A string or regexp to search for in the HTTP response. If the string is found, the check is successful. | |
 | `--listener` |  The IP address and port on which inbound HTTP connections will be accepted. | `0.0.0.0:5500`
 | `--log-level` | Set the log level to LEVEL. Must be one of: `panic`, `fatal`, `error,` `warning`, `info`, or `debug` | `info`
 | `--help` | Show the help screen | |
 | `--script` | Path to script to run - will pass if it completes within configured timeout with a zero exit status. Specify one or more times. | |
 | `--script-timeout` | Timeout, in seconds, to wait for the scripts to exit. Applies to all configured script targets. | `5` |
 | `--singleflight` | Enables single flight mode, which allows concurrent health check requests to share the results of a single check.  | |
+| `--msg` | Return a JSON object with a detailed status and message instead of plain text. | |
 | `--version` | Show the program's version | |
 
 If you execute a shell script, ensure you have a `shebang` line in your script, otherwise the script will fail with an `exec format error`.
@@ -72,7 +79,7 @@ attempt to open TCP connections to port 5432 and 3306. If both succeed, return `
 504 Gateway Not Found`.
 
 ```
-health-checker --listener "0.0.0.0:6000" --port 5432 --port 3306
+health-checker --listener "0.0.0.0:6000" --tcp-port 5432 --tcp-port 3306
 ```
 
 #### Example 2
@@ -82,7 +89,7 @@ attempt to open TCP connection to port 5432 and run the script with a 10 second 
 504 Gateway Not Found`.
 
 ```
-health-checker --listener "0.0.0.0:6000" --port 5432 --script /path/to/script.sh --script-timeout 10
+health-checker --listener "0.0.0.0:6000" --tcp-port 5432 --script /path/to/script.sh --script-timeout 10
 ```
 
 #### Example 3
@@ -93,4 +100,14 @@ attempt to run the configured scripts. If both return exit code zero, return `HT
 
 ```
 health-checker --listener "0.0.0.0:6000" --script "/usr/local/bin/exhibitor-health-check.sh --exhibitor-port 8080" --script "/usr/local/bin/zk-health-check.sh --zk-port 2191"
+```
+
+#### Example 4
+
+Run a listener on port 6000 that accepts all inbound HTTP connections for any URL. When the request is received,
+attempt to open an HTTP connection to `http://localhost:8080/health`. If the connection succeeds and the response body
+contains the string "OK", return `HTTP 200 OK`. Otherwise, return `HTTP 504 Gateway Not Found`.
+
+```
+health-checker --listener "0.0.0.0:6000" --http-url http://localhost:8080/health --http-match "OK"
 ```

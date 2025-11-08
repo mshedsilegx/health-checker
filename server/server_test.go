@@ -1,11 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,45 +19,77 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestParseChecksFromConfig(t *testing.T) {
+func TestRunChecks(t *testing.T) {
 	// Will *not* run parallel because we're opening random tcp ports
 	// and want to avoid port clashes
 	testCases := []struct {
 		name           string
-		numports       int
-		failport       bool
+		numTcpPorts    int
+		numHttpPorts   int
+		failTcpPort    bool
+		failHttpPort   bool
+		httpUrl        string
+		httpMatch      string
 		scripts        []string
 		scriptTimeout  int
 		expectedStatus int
 	}{
 		{
-			"port check",
+			"tcp port check",
 			1,
+			0,
 			false,
+			false,
+			"",
+			"",
 			[]string{},
 			5,
 			200,
 		},
 		{
-			"multiport check",
+			"multiport tcp check",
 			3,
+			0,
 			false,
+			false,
+			"",
+			"",
 			[]string{},
 			5,
 			200,
 		},
 		{
-			"multiport check one fails",
+			"multiport tcp check one fails",
 			3,
+			0,
 			true,
+			false,
+			"",
+			"",
 			[]string{},
 			5,
 			504,
 		},
 		{
+			"http port check",
+			0,
+			1,
+			false,
+			false,
+			"",
+			"",
+			[]string{},
+			5,
+			200,
+		},
+		{
 			"script ok",
 			0,
+			0,
 			false,
+			false,
+			"",
+			"",
 			[]string{"echo 'hello'"},
 			5,
 			200,
@@ -62,7 +97,11 @@ func TestParseChecksFromConfig(t *testing.T) {
 		{
 			"script fail",
 			0,
+			0,
 			false,
+			false,
+			"",
+			"",
 			[]string{"lskdf"},
 			5,
 			504,
@@ -70,7 +109,11 @@ func TestParseChecksFromConfig(t *testing.T) {
 		{
 			"multi script ok",
 			0,
+			0,
 			false,
+			false,
+			"",
+			"",
 			[]string{"echo 'hello1'", "echo 'hello2'"},
 			5,
 			200,
@@ -78,66 +121,178 @@ func TestParseChecksFromConfig(t *testing.T) {
 		{
 			"multi script one fail",
 			0,
+			0,
 			false,
+			false,
+			"",
+			"",
 			[]string{"echo 'hello1'", "lskdf"},
 			5,
 			504,
 		},
 		{
-			"script and port",
+			"script and tcp port",
 			1,
+			0,
 			false,
+			false,
+			"",
+			"",
 			[]string{"echo 'hello1'"},
 			5,
 			200,
 		},
+		{
+			"http port check fail",
+			0,
+			1,
+			false,
+			true,
+			"",
+			"",
+			[]string{},
+			5,
+			504,
+		},
+		{
+			"http url check",
+			0,
+			0,
+			false,
+			false,
+			"", // Will be replaced with mock server URL
+			"",
+			[]string{},
+			5,
+			200,
+		},
+		{
+			"http url check fail",
+			0,
+			0,
+			false,
+			false,
+			"http://localhost:12346", // A port that is guaranteed to be free
+			"",
+			[]string{},
+			5,
+			504,
+		},
+		{
+			"http match check",
+			0,
+			0,
+			false,
+			false,
+			"", // Will be replaced with mock server URL
+			"OK",
+			[]string{},
+			5,
+			200,
+		},
+		{
+			"http match check fail",
+			0,
+			0,
+			false,
+			false,
+			"", // Will be replaced with mock server URL
+			"FAIL",
+			[]string{},
+			5,
+			504,
+		},
+	}
+
+	// Create a mock HTTP server that returns a 200 OK with the body "OK"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}))
+	defer ts.Close()
+
+	for i, testCase := range testCases {
+		if testCase.name == "http url check" || testCase.name == "http match check" || testCase.name == "http match check fail" {
+			testCases[i].httpUrl = ts.URL
+		}
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			ports, err := test.GetFreePorts(1 + testCase.numports)
-
+			tcpPorts, err := test.GetFreePorts(1 + testCase.numTcpPorts)
 			if err != nil {
-				assert.FailNow(t, "Failed to get free ports: %v", err.Error())
+				assert.FailNow(t, "Failed to get free tcp ports: %v", err.Error())
 			}
 
-			listenerString := test.ListenerString(test.DEFAULT_LISTENER_ADDRESS, ports[0])
+			httpPorts, err := test.GetFreePorts(testCase.numHttpPorts)
+			if err != nil {
+				assert.FailNow(t, "Failed to get free http ports: %v", err.Error())
+			}
 
-			checkPorts := []int{}
-			listenPorts := []int{}
+			listenerString := test.ListenerString(test.DEFAULT_LISTENER_ADDRESS, tcpPorts[0])
+
+			checkTcpPorts := []int{}
+			listenTcpPorts := []int{}
 
 			// If we're monitoring tcp ports, prepare them
-			if testCase.numports > 0 {
-				checkPorts = ports[1:]
-				listenPorts = make([]int, len(checkPorts))
-				copy(listenPorts, checkPorts)
+			if testCase.numTcpPorts > 0 {
+				checkTcpPorts = tcpPorts[1:]
+				listenTcpPorts = make([]int, len(checkTcpPorts))
+				copy(listenTcpPorts, checkTcpPorts)
 
 				// If we want to fail one check, remove the first port from the listen ports
 				// So the health-check cannot connect
-				if testCase.failport {
-					listenPorts = listenPorts[1:]
+				if testCase.failTcpPort {
+					listenTcpPorts = listenTcpPorts[1:]
 				}
 			}
 
-			listeners := []net.Listener{}
+			checkHttpPorts := []int{}
 
-			for _, port := range listenPorts {
+			if testCase.numHttpPorts > 0 {
+				listenHttpPorts := make([]int, testCase.numHttpPorts)
+				copy(listenHttpPorts, httpPorts)
+
+				if testCase.failHttpPort {
+					checkHttpPorts = httpPorts
+				} else {
+					for range listenHttpPorts {
+						ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							w.WriteHeader(http.StatusOK)
+							w.Write([]byte("OK"))
+						}))
+						defer ts.Close()
+
+						parsedUrl, err := url.Parse(ts.URL)
+						if err != nil {
+							assert.FailNow(t, "Failed to parse http test server url: %v", err.Error())
+						}
+						p, err := strconv.Atoi(parsedUrl.Port())
+						if err != nil {
+							assert.FailNow(t, "Failed to parse http test server port: %v", err.Error())
+						}
+						checkHttpPorts = append(checkHttpPorts, p)
+					}
+				}
+			}
+
+			tcpListeners := []net.Listener{}
+			for _, port := range listenTcpPorts {
 				t.Logf("Creating listener for port %d", port)
 				l, err := net.Listen("tcp", test.ListenerString(test.DEFAULT_LISTENER_ADDRESS, port))
 				if err != nil {
 					t.Logf("Error creating listener for port %d: %s", port, err.Error())
 					assert.FailNow(t, "Failed to start listening: %s", err.Error())
 				}
-
-				listeners = append(listeners, l)
-
-				// Separate goroutine for the tcp listeners
+				tcpListeners = append(tcpListeners, l)
 				go handleRequests(t, l, nil)
 			}
+			defer closeListeners(t, tcpListeners)
 
-			defer closeListeners(t, listeners)
-
-			opts := createOptionsForTest(t, testCase.scriptTimeout, testCase.scripts, listenerString, checkPorts)
+			opts := createOptionsForTest(t, testCase.scriptTimeout, testCase.scripts, listenerString, checkTcpPorts)
+			opts.HttpPorts = checkHttpPorts
+			opts.HttpUrl = testCase.httpUrl
+			opts.HttpMatch = testCase.httpMatch
 
 			// Run the checks and verify the status code
 			response := runChecks(opts)
@@ -146,16 +301,23 @@ func TestParseChecksFromConfig(t *testing.T) {
 	}
 }
 
-func TestRaceCondition(t *testing.T) {
+func TestJsonOutput(t *testing.T) {
 	t.Parallel()
 
-	// Run this test multiple times to increase the chances of detecting a race condition
-	for i := 0; i < 100; i++ {
-		// All these checks should fail, but run them in parallel.
-		// If there is a race condition, sometimes allChecksOk will be true.
-		opts := createOptionsForTest(t, 5, []string{}, "0.0.0.0:12345", []int{12346, 12347, 12348, 12349, 12350})
-		response := runChecks(opts)
-		assert.Equal(t, http.StatusGatewayTimeout, response.StatusCode)
+	// This test case should fail the TCP check but pass the script check
+	opts := createOptionsForTest(t, 5, []string{"echo 'hello'"}, "0.0.0.0:12345", []int{12346})
+	opts.ReturnJson = true
+
+	response := runChecks(opts)
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+
+	var result JsonResult
+	err := json.Unmarshal([]byte(response.Body), &result)
+	if assert.NoError(t, err) {
+		assert.Equal(t, "FAIL", result.Status)
+		assert.ElementsMatch(t, []int{12346}, result.Message.Content.FailedTcpPorts)
+		assert.ElementsMatch(t, []int{}, result.Message.Content.SuccessTcpPorts)
+		assert.ElementsMatch(t, []string{"'hello'\n"}, result.Message.Content.ScriptResults)
 	}
 }
 

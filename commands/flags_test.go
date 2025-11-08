@@ -39,25 +39,25 @@ func TestParseChecksFromConfig(t *testing.T) {
 		},
 		{
 			"valid listener",
-			[]string{"--listener", "1234", "--port", "4321"},
+			[]string{"--listener", "1234", "--tcp-port", "4321"},
 			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, test.ListenerString(DEFAULT_LISTENER_IP_ADDRESS, 1234), []int{4321}),
 			"",
 		},
 		{
 			"single port",
-			[]string{"--port", "8080"},
+			[]string{"--tcp-port", "8080"},
 			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, defaultListener(), []int{8080}),
 			"",
 		},
 		{
 			"multiple ports",
-			[]string{"--port", "8080", "--port", "8081"},
+			[]string{"--tcp-port", "8080", "--tcp-port", "8081"},
 			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, defaultListener(), []int{8080, 8081}),
 			"",
 		},
 		{
 			"both port and script",
-			[]string{"--port", "8080", "--script", "\"/usr/local/bin/check.sh 1234\""},
+			[]string{"--tcp-port", "8080", "--script", "\"/usr/local/bin/check.sh 1234\""},
 			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{"\"/usr/local/bin/check.sh 1234\""}, defaultListener(), []int{8080}),
 			"",
 		},
@@ -77,6 +77,30 @@ func TestParseChecksFromConfig(t *testing.T) {
 			"multiple scripts",
 			[]string{"--script", "/usr/local/bin/check1.sh", "--script", "/usr/local/bin/check2.sh"},
 			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{"/usr/local/bin/check1.sh", "/usr/local/bin/check2.sh"}, defaultListener(), []int{}),
+			"",
+		},
+		{
+			"tcp port range",
+			[]string{"--tcp-port-range", "8000-8002"},
+			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, defaultListener(), []int{8000, 8001, 8002}),
+			"",
+		},
+		{
+			"http port",
+			[]string{"--http-port", "8080"},
+			createOptionsForTestWithHttp(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, defaultListener(), []int{}, []int{8080}, ""),
+			"",
+		},
+		{
+			"http port range",
+			[]string{"--http-port-range", "8000-8002"},
+			createOptionsForTestWithHttp(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, defaultListener(), []int{}, []int{8000, 8001, 8002}, ""),
+			"",
+		},
+		{
+			"http url",
+			[]string{"--http-url", "http://localhost:8080"},
+			createOptionsForTestWithHttp(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, defaultListener(), []int{}, []int{}, "http://localhost:8080"),
 			"",
 		},
 	}
@@ -108,9 +132,11 @@ func defaultListener() string {
 
 func assertOptionsEqual(t *testing.T, expected options.Options, actual options.Options, msgAndArgs ...interface{}) {
 	assert.Equal(t, expected.ScriptTimeout, actual.ScriptTimeout, msgAndArgs...)
-	assert.Equal(t, expected.Scripts, actual.Scripts, msgAndArgs...)
+	assert.ElementsMatch(t, expected.Scripts, actual.Scripts, msgAndArgs...)
 	assert.Equal(t, expected.Listener, actual.Listener, msgAndArgs...)
-	assert.Equal(t, expected.Ports, actual.Ports, msgAndArgs...)
+	assert.ElementsMatch(t, expected.Ports, actual.Ports, msgAndArgs...)
+	assert.ElementsMatch(t, expected.HttpPorts, actual.HttpPorts, msgAndArgs...)
+	assert.Equal(t, expected.HttpUrl, actual.HttpUrl, msgAndArgs...)
 }
 
 func createContextForTesting(args []string) *cli.Command {
@@ -128,5 +154,12 @@ func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, lis
 	opts.Scripts = options.ParseScripts(scripts)
 	opts.Listener = listener
 	opts.Ports = ports
+	return opts
+}
+
+func createOptionsForTestWithHttp(t *testing.T, scriptTimeout int, scripts []string, listener string, ports []int, httpPorts []int, httpUrl string) *options.Options {
+	opts := createOptionsForTest(t, scriptTimeout, scripts, listener, ports)
+	opts.HttpPorts = httpPorts
+	opts.HttpUrl = httpUrl
 	return opts
 }
