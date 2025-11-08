@@ -207,7 +207,8 @@ func TestRunChecks(t *testing.T) {
 	// Create a mock HTTP server that returns a 200 OK with the body "OK"
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, err := w.Write([]byte("OK"))
+		assert.NoError(t, err)
 	}))
 	defer ts.Close()
 
@@ -259,7 +260,8 @@ func TestRunChecks(t *testing.T) {
 					for range listenHttpPorts {
 						ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 							w.WriteHeader(http.StatusOK)
-							w.Write([]byte("OK"))
+							_, err := w.Write([]byte("OK"))
+							assert.NoError(t, err)
 						}))
 						defer ts.Close()
 
