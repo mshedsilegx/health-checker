@@ -1,5 +1,17 @@
 # Changelog
 
+## 2025-11-11
+
+### Security
+
+- **Fixed Command Injection Vulnerability:** The `ParseScripts` function now uses the `go-shellwords` library to safely parse script strings, mitigating a command injection vulnerability.
+- **Fixed SSRF Vulnerability:** Added validation to the `--http-url` flag to prevent Server-Side Request Forgery (SSRF) attacks.
+- **Fixed ReDoS Vulnerability:** Replaced the `regexp.Match` function with `re2.Match` to prevent Regular Expression Denial of Service (ReDoS) attacks.
+
+### Improvements
+
+- **Consistent Error Handling:** Updated the codebase to use `errors.WithStackTrace` consistently for all errors that are returned from functions.
+
 ## 2025-11-07
 
 ### New Features

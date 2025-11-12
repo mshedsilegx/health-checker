@@ -8,12 +8,13 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
-	"regexp"
 	"sync"
 	"time"
 
 	"github.com/gruntwork-io/go-commons/errors"
 	"github.com/gruntwork-io/health-checker/options"
+	"github.com/sirupsen/logrus"
+	"github.com/wasilibs/go-re2"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -42,12 +43,22 @@ type ContentResult struct {
 	ScriptResults    []string `json:"script_results"`
 }
 
+type checkChannels struct {
+	failedTcpPorts   chan int
+	successTcpPorts  chan int
+	failedHttpPorts  chan int
+	successHttpPorts chan int
+	failedHttpUrls   chan string
+	successHttpUrls  chan string
+	scriptResults    chan string
+}
+
 func StartHttpServer(opts *options.Options) error {
 	http.HandleFunc("/", httpHandler(opts))
 
 	err := http.ListenAndServe(opts.Listener, nil)
 	if err != nil {
-		return err
+		return errors.WithStackTrace(err)
 	}
 
 	return nil
@@ -65,7 +76,7 @@ func attemptHttpConnection(url string, opts *options.Options) error {
 
 	resp, err := client.Get(url)
 	if err != nil {
-		return err
+		return errors.WithStackTrace(err)
 	}
 
 	defer func() {
@@ -76,22 +87,22 @@ func attemptHttpConnection(url string, opts *options.Options) error {
 	}()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
-		return fmt.Errorf("expected status code 200 or 302, but got %d", resp.StatusCode)
+		return errors.WithStackTrace(fmt.Errorf("expected status code 200 or 302, but got %d", resp.StatusCode))
 	}
 
 	if opts.HttpMatch != "" {
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return err
+			return errors.WithStackTrace(err)
 		}
 
-		match, err := regexp.Match(opts.HttpMatch, body)
+		match, err := re2.Match(opts.HttpMatch, body)
 		if err != nil {
-			return err
+			return errors.WithStackTrace(err)
 		}
 
 		if !match {
-			return fmt.Errorf("could not find string %s in response body", opts.HttpMatch)
+			return errors.WithStackTrace(fmt.Errorf("could not find string %s in response body", opts.HttpMatch))
 		}
 	}
 
@@ -144,31 +155,19 @@ func runChecks(opts *options.Options) *httpResponse {
 
 	var waitGroup = sync.WaitGroup{}
 
-	failedTcpPorts := make(chan int, len(opts.Ports))
-	successTcpPorts := make(chan int, len(opts.Ports))
-	failedHttpPorts := make(chan int, len(opts.HttpPorts))
-	successHttpPorts := make(chan int, len(opts.HttpPorts))
-	failedHttpUrls := make(chan string, 1)
-	successHttpUrls := make(chan string, 1)
-	scriptResults := make(chan string, len(opts.Scripts))
+	channels := newCheckChannels(opts)
 
-	runTcpChecks(opts, &waitGroup, &allChecksOk, mutex, failedTcpPorts, successTcpPorts)
-	runHttpChecks(opts, &waitGroup, &allChecksOk, mutex, failedHttpPorts, successHttpPorts)
-	runHttpUrlChecks(opts, &waitGroup, &allChecksOk, mutex, failedHttpUrls, successHttpUrls)
-	runScriptChecks(opts, &waitGroup, &allChecksOk, mutex, scriptResults)
+	runTcpChecks(opts, &waitGroup, &allChecksOk, mutex, channels.failedTcpPorts, channels.successTcpPorts)
+	runHttpChecks(opts, &waitGroup, &allChecksOk, mutex, channels.failedHttpPorts, channels.successHttpPorts)
+	runHttpUrlChecks(opts, &waitGroup, &allChecksOk, mutex, channels.failedHttpUrls, channels.successHttpUrls)
+	runScriptChecks(opts, &waitGroup, &allChecksOk, mutex, channels.scriptResults)
 
 	waitGroup.Wait()
 
-	close(failedTcpPorts)
-	close(successTcpPorts)
-	close(failedHttpPorts)
-	close(successHttpPorts)
-	close(failedHttpUrls)
-	close(successHttpUrls)
-	close(scriptResults)
+	closeChannels(channels)
 
 	if opts.ReturnJson {
-		return &httpResponse{StatusCode: http.StatusOK, Body: toJson(allChecksOk, failedTcpPorts, successTcpPorts, failedHttpPorts, successHttpPorts, failedHttpUrls, successHttpUrls, scriptResults)}
+		return &httpResponse{StatusCode: http.StatusOK, Body: toJson(allChecksOk, channels.failedTcpPorts, channels.successTcpPorts, channels.failedHttpPorts, channels.successHttpPorts, channels.failedHttpUrls, channels.successHttpUrls, channels.scriptResults)}
 	}
 
 	if allChecksOk {
@@ -178,6 +177,28 @@ func runChecks(opts *options.Options) *httpResponse {
 		logger.Infof("At least one health check failed. Returning HTTP 504 response.\n")
 		return &httpResponse{StatusCode: http.StatusGatewayTimeout, Body: "At least one health check failed"}
 	}
+}
+
+func newCheckChannels(opts *options.Options) *checkChannels {
+	return &checkChannels{
+		failedTcpPorts:   make(chan int, len(opts.Ports)),
+		successTcpPorts:  make(chan int, len(opts.Ports)),
+		failedHttpPorts:  make(chan int, len(opts.HttpPorts)),
+		successHttpPorts: make(chan int, len(opts.HttpPorts)),
+		failedHttpUrls:   make(chan string, 1),
+		successHttpUrls:  make(chan string, 1),
+		scriptResults:    make(chan string, len(opts.Scripts)),
+	}
+}
+
+func closeChannels(channels *checkChannels) {
+	close(channels.failedTcpPorts)
+	close(channels.successTcpPorts)
+	close(channels.failedHttpPorts)
+	close(channels.successHttpPorts)
+	close(channels.failedHttpUrls)
+	close(channels.successHttpUrls)
+	close(channels.scriptResults)
 }
 
 // Concurrently run all the TCP health checks
@@ -191,13 +212,16 @@ func runTcpChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk 
 
 			err := attemptTcpConnection(port, opts)
 			if err != nil {
-				logger.Warnf("TCP connection to port %d FAILED: %s", port, err)
+				logger.WithFields(logrus.Fields{
+					"port":  port,
+					"error": err,
+				}).Warn("TCP connection to port failed")
 				mutex.Lock()
 				*allChecksOk = false
 				mutex.Unlock()
 				failedTcpPorts <- port
 			} else {
-				logger.Infof("TCP connection to port %d successful", port)
+				logger.WithField("port", port).Info("TCP connection to port successful")
 				successTcpPorts <- port
 			}
 		}(port)
@@ -216,13 +240,16 @@ func runHttpChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecksOk
 			url := fmt.Sprintf("http://127.0.0.1:%d", port)
 			err := attemptHttpConnection(url, opts)
 			if err != nil {
-				logger.Warnf("HTTP connection to port %d FAILED: %s", port, err)
+				logger.WithFields(logrus.Fields{
+					"port":  port,
+					"error": err,
+				}).Warn("HTTP connection to port failed")
 				mutex.Lock()
 				*allChecksOk = false
 				mutex.Unlock()
 				failedHttpPorts <- port
 			} else {
-				logger.Infof("HTTP connection to port %d successful", port)
+				logger.WithField("port", port).Info("HTTP connection to port successful")
 				successHttpPorts <- port
 			}
 		}(port)
@@ -239,7 +266,7 @@ func runScriptChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecks
 
 			defer waitGroup.Done()
 
-			logger.Infof("Executing '%v' with a timeout of %v seconds...", script, opts.ScriptTimeout)
+			logger.WithField("script", script).Info("Executing script")
 
 			timeout := time.Second * time.Duration(opts.ScriptTimeout)
 
@@ -252,14 +279,17 @@ func runScriptChecks(opts *options.Options, waitGroup *sync.WaitGroup, allChecks
 			output, err := cmd.Output()
 
 			if err != nil {
-				logger.Warnf("Script %v FAILED: %s", script.Name, err)
-				logger.Warnf("Command output: %s", output)
+				logger.WithFields(logrus.Fields{
+					"script": script,
+					"error":  err,
+					"output": string(output),
+				}).Warn("Script failed")
 				mutex.Lock()
 				*allChecksOk = false
 				mutex.Unlock()
 				scriptResults <- string(output)
 			} else {
-				logger.Infof("Script %v successful", script)
+				logger.WithField("script", script).Info("Script successful")
 				scriptResults <- string(output)
 			}
 		}(script)
@@ -276,13 +306,16 @@ func runHttpUrlChecks(opts *options.Options, waitGroup *sync.WaitGroup, allCheck
 
 			err := attemptHttpConnection(url, opts)
 			if err != nil {
-				logger.Warnf("HTTP connection to URL %s FAILED: %s", url, err)
+				logger.WithFields(logrus.Fields{
+					"url":   url,
+					"error": err,
+				}).Warn("HTTP connection to URL failed")
 				mutex.Lock()
 				*allChecksOk = false
 				mutex.Unlock()
 				failedHttpUrls <- url
 			} else {
-				logger.Infof("HTTP connection to URL %s successful", url)
+				logger.WithField("url", url).Info("HTTP connection to URL successful")
 				successHttpUrls <- url
 			}
 		}(opts.HttpUrl)
@@ -298,11 +331,14 @@ func attemptTcpConnection(port int, opts *options.Options) error {
 
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("0.0.0.0:%d", port), timeout)
 	if err != nil {
-		return err
+		return errors.WithStackTrace(err)
 	}
 
 	defer func() {
-		_ = conn.Close()
+		err := conn.Close()
+		if err != nil {
+			opts.Logger.Warnf("error closing TCP connection: %s", err)
+		}
 	}()
 
 	return nil

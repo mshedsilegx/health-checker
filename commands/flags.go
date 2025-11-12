@@ -2,10 +2,13 @@ package commands
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/gruntwork-io/go-commons/errors"
 	"github.com/gruntwork-io/health-checker/options"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v3"
@@ -100,7 +103,7 @@ func parseOptions(cliContext *cli.Command) (*options.Options, error) {
 	logLevel := cliContext.Value("log-level").(string)
 	level, err := logrus.ParseLevel(logLevel)
 	if err != nil {
-		return nil, InvalidLogLevel(logLevel)
+		return nil, errors.WithStackTrace(InvalidLogLevel(logLevel))
 	}
 	logger.SetLevel(level)
 
@@ -108,7 +111,7 @@ func parseOptions(cliContext *cli.Command) (*options.Options, error) {
 	portRange := cliContext.Value("tcp-port-range").(string)
 	rangePorts, err := parsePortRange(portRange)
 	if err != nil {
-		return nil, err
+		return nil, errors.WithStackTrace(err)
 	}
 	ports = append(ports, rangePorts...)
 
@@ -116,16 +119,22 @@ func parseOptions(cliContext *cli.Command) (*options.Options, error) {
 	httpPortRange := cliContext.Value("http-port-range").(string)
 	httpRangePorts, err := parsePortRange(httpPortRange)
 	if err != nil {
-		return nil, err
+		return nil, errors.WithStackTrace(err)
 	}
 	httpPorts = append(httpPorts, httpRangePorts...)
 	httpUrl := cliContext.Value("http-url").(string)
+	if err := validateHttpUrl(httpUrl); err != nil {
+		return nil, errors.WithStackTrace(err)
+	}
 
 	scriptArr := cliContext.Value("script").([]string)
-	scripts := options.ParseScripts(scriptArr)
+	scripts, err := options.ParseScripts(scriptArr)
+	if err != nil {
+		return nil, errors.WithStackTrace(err)
+	}
 
 	if len(ports) == 0 && len(httpPorts) == 0 && httpUrl == "" && len(scripts) == 0 {
-		return nil, OneOfParamsRequired{Params: []string{"tcp-port", "http-port", "http-url", "script"}}
+		return nil, errors.WithStackTrace(OneOfParamsRequired{Params: []string{"tcp-port", "http-port", "http-url", "script"}})
 	}
 
 	singleflight := cliContext.Value("singleflight").(bool)
@@ -200,6 +209,30 @@ func (paramNames OneOfParamsRequired) Error() string {
 		paramStrings = append(paramStrings, fmt.Sprintf("--%s", param))
 	}
 	return fmt.Sprintf("Missing required parameter, one of %s is required", strings.Join(paramStrings, " / "))
+}
+
+func validateHttpUrl(httpUrl string) error {
+	if httpUrl == "" {
+		return nil
+	}
+
+	parsedUrl, err := url.Parse(httpUrl)
+	if err != nil {
+		return err
+	}
+
+	ips, err := net.LookupIP(parsedUrl.Hostname())
+	if err != nil {
+		return err
+	}
+
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() {
+			return fmt.Errorf("URL points to a local or private IP address: %s", httpUrl)
+		}
+	}
+
+	return nil
 }
 
 func parsePortRange(portRange string) ([]int, error) {

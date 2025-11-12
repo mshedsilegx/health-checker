@@ -1,8 +1,7 @@
 package options
 
 import (
-	"strings"
-
+	"github.com/mattn/go-shellwords"
 	"github.com/sirupsen/logrus"
 )
 
@@ -27,10 +26,13 @@ type Script struct {
 	Args []string
 }
 
-func ParseScripts(scriptStrings []string) []Script {
+func ParseScripts(scriptStrings []string) ([]Script, error) {
 	rv := []Script{}
 	for _, s := range scriptStrings {
-		commandArr := strings.Split(s, " ")
+		commandArr, err := shellwords.Parse(s)
+		if err != nil {
+			return nil, err
+		}
 		scriptName := commandArr[0]
 		scriptParams := []string{}
 		if len(commandArr) > 1 {
@@ -38,5 +40,5 @@ func ParseScripts(scriptStrings []string) []Script {
 		}
 		rv = append(rv, Script{scriptName, scriptParams})
 	}
-	return rv
+	return rv, nil
 }

@@ -319,7 +319,7 @@ func TestJsonOutput(t *testing.T) {
 		assert.Equal(t, "FAIL", result.Status)
 		assert.ElementsMatch(t, []int{12346}, result.Message.Content.FailedTcpPorts)
 		assert.ElementsMatch(t, []int{}, result.Message.Content.SuccessTcpPorts)
-		assert.ElementsMatch(t, []string{"'hello'\n"}, result.Message.Content.ScriptResults)
+		assert.ElementsMatch(t, []string{"hello\n"}, result.Message.Content.ScriptResults)
 	}
 }
 
@@ -433,7 +433,9 @@ func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, lis
 	opts := &options.Options{}
 	opts.Logger = logger
 	opts.ScriptTimeout = scriptTimeout
-	opts.Scripts = options.ParseScripts(scripts)
+	parsedScripts, err := options.ParseScripts(scripts)
+	assert.Nil(t, err, "Unexpected error: %v", err)
+	opts.Scripts = parsedScripts
 	opts.Listener = listener
 	opts.Ports = ports
 	return opts

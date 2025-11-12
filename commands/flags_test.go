@@ -99,9 +99,15 @@ func TestParseChecksFromConfig(t *testing.T) {
 		},
 		{
 			"http url",
-			[]string{"--http-url", "http://localhost:8080"},
-			createOptionsForTestWithHttp(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, defaultListener(), []int{}, []int{}, "http://localhost:8080"),
+			[]string{"--http-url", "http://gruntwork.io"},
+			createOptionsForTestWithHttp(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, defaultListener(), []int{}, []int{}, "http://gruntwork.io"),
 			"",
+		},
+		{
+			"http url local",
+			[]string{"--http-url", "http://localhost:8080"},
+			nil,
+			"URL points to a local or private IP address",
 		},
 	}
 
@@ -151,7 +157,9 @@ func createContextForTesting(args []string) *cli.Command {
 func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, listener string, ports []int) *options.Options {
 	opts := &options.Options{}
 	opts.ScriptTimeout = scriptTimeout
-	opts.Scripts = options.ParseScripts(scripts)
+	parsedScripts, err := options.ParseScripts(scripts)
+	assert.Nil(t, err, "Unexpected error: %v", err)
+	opts.Scripts = parsedScripts
 	opts.Listener = listener
 	opts.Ports = ports
 	return opts
