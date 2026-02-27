@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -133,24 +134,24 @@ func runChecks(opts *options.Options) *httpResponse {
 
 	for _, port := range opts.Ports {
 		waitGroup.Add(1)
-		go func(port int) {
+		go func(portStr string) {
 			defer waitGroup.Done()
 
-			err := attemptTcpConnection(masterCtx, port, opts)
+			err := attemptTcpConnection(masterCtx, portStr, opts)
 			if err != nil {
 				// Don't report context cancelation as an explicit "failure" to avoid noise
 				if errors.Is(err, context.Canceled) {
 					return
 				}
 
-				logger.Warnf("TCP connection to port %d FAILED: %s", port, err)
+				logger.Warnf("TCP connection to %s FAILED: %s", portStr, err)
 				errorMu.Lock()
-				errorMessages = append(errorMessages, fmt.Sprintf("TCP connection to port %d failed: %s", port, err.Error()))
+				errorMessages = append(errorMessages, fmt.Sprintf("TCP connection to %s failed: %s", portStr, err.Error()))
 				errorMu.Unlock()
 
 				masterCancel()
 			} else {
-				logger.Infof("TCP connection to port %d successful", port)
+				logger.Infof("TCP connection to %s successful", portStr)
 			}
 		}(port)
 	}
@@ -246,18 +247,18 @@ func runChecks(opts *options.Options) *httpResponse {
 	}
 
 	if statusCode == http.StatusOK {
-		logger.Infof("All health checks passed. Returning HTTP 200 response.\n")
+		logger.Infof("All health checks passed. Returning HTTP 200 response.")
 	} else {
-		logger.Infof("At least one health check failed. Returning HTTP 504 response.\n")
+		logger.Infof("At least one health check failed. Returning HTTP 504 response.")
 	}
 
 	return &httpResponse{StatusCode: statusCode, Body: body, ContentType: contentType}
 }
 
-// Attempt to open a TCP connection to the given port
-func attemptTcpConnection(ctx context.Context, port int, opts *options.Options) error {
+// Attempt to open a TCP connection to the given address (can be port only or host:port)
+func attemptTcpConnection(ctx context.Context, portStr string, opts *options.Options) error {
 	logger := opts.Logger
-	logger.Infof("Attempting to connect to port %d via TCP...", port)
+	logger.Infof("Attempting to connect to %s via TCP...", portStr)
 
 	defaultTimeout := time.Duration(opts.TcpDialTimeout) * time.Second
 	if defaultTimeout == 0 {
@@ -265,7 +266,14 @@ func attemptTcpConnection(ctx context.Context, port int, opts *options.Options) 
 	}
 
 	dialer := net.Dialer{Timeout: defaultTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("0.0.0.0:%d", port))
+
+	// If only a port is provided, default to 0.0.0.0
+	address := portStr
+	if !strings.Contains(address, ":") {
+		address = fmt.Sprintf("0.0.0.0:%s", portStr)
+	}
+
+	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
 		return err
 	}
@@ -282,7 +290,7 @@ func attemptHttpConnection(ctx context.Context, httpCheck options.HttpCheck, opt
 	logger := opts.Logger
 	logger.Infof("Attempting to perform HTTP check to %s...", httpCheck.Url)
 
-	defaultTimeout := time.Duration(opts.TcpDialTimeout) * time.Second
+	defaultTimeout := time.Duration(opts.HttpDialTimeout) * time.Second
 	if defaultTimeout == 0 {
 		defaultTimeout = time.Second * 5
 	}

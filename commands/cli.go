@@ -63,6 +63,13 @@ func runHealthChecker(ctx context.Context, cmd *cli.Command) error {
 	if len(opts.Scripts) > 0 {
 		opts.Logger.Infof("The Health Check will attempt to run the following scripts: %v", opts.Scripts)
 	}
+	if len(opts.HttpChecks) > 0 {
+		var urls []string
+		for _, check := range opts.HttpChecks {
+			urls = append(urls, check.Url)
+		}
+		opts.Logger.Infof("The Health Check will attempt to connect to the following URLs via HTTP/S: %v", urls)
+	}
 	opts.Logger.Infof("Listening on Port %s...", opts.Listener)
 	err = server.StartHttpServer(opts)
 	if err != nil {

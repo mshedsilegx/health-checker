@@ -1,13 +1,16 @@
 package server
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+
 	"runtime"
+
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -184,14 +187,17 @@ func TestParseChecksFromConfig(t *testing.T) {
 
 			listenerString := test.ListenerString(test.DEFAULT_LISTENER_ADDRESS, ports[0])
 
-			checkPorts := []int{}
+			checkPorts := []string{}
 			listenPorts := []int{}
 
 			// If we're monitoring tcp ports, prepare them
 			if testCase.numports > 0 {
-				checkPorts = ports[1:]
-				listenPorts = make([]int, len(checkPorts))
-				copy(listenPorts, checkPorts)
+				listenPorts = make([]int, len(ports[1:]))
+				copy(listenPorts, ports[1:])
+
+				for _, p := range listenPorts {
+					checkPorts = append(checkPorts, fmt.Sprintf("%d", p))
+				}
 
 				// If we want to fail one check, remove the first port from the listen ports
 				// So the health-check cannot connect
@@ -280,7 +286,7 @@ func TestSingleflight(t *testing.T) {
 			}()
 
 			// Fire the request off to the dummy sleep script to ensure it takes a while
-			opts := createOptionsForTest(t, 10, []string{sleepScript}, nil, test.DEFAULT_LISTENER_ADDRESS, []int{port})
+			opts := createOptionsForTest(t, 5, []string{sleepScript}, nil, test.ListenerString(test.DEFAULT_LISTENER_ADDRESS, port), []string{fmt.Sprintf("%d", port)})
 			opts.Singleflight = testCase.singleflight
 
 			handler := httpHandler(opts)
@@ -340,7 +346,7 @@ func handleRequests(t *testing.T, l net.Listener, counter *int32) {
 	}
 }
 
-func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, httpChecks []options.HttpCheck, listener string, ports []int) *options.Options {
+func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, httpChecks []options.HttpCheck, listener string, ports []string) *options.Options {
 	logger := logging.GetLogger("health-checker", "v0.0.0")
 	logger.Logger.Out = os.Stdout
 	logger.Logger.Level = logrus.InfoLevel

@@ -56,7 +56,7 @@ The `health-checker` is fully statically compiled via Go, meaning it has zero sy
 
 | Option | Type | Default | Description |
 | ------ | ---- | ------- | ----------- |
-| `--port` | `int` | *None* | **[One of port/script/http Required]** The port number on which a TCP connection will be attempted. Specify one or more times. |
+| `--port` | `string` | *None* | **[One of port/script/http Required]** The port number on which a TCP connection will be attempted. Can be a simple port (e.g., `8000`) for a local check on `0.0.0.0`, or an `ip:port` (e.g. `127.0.0.1:8000`) as well as a `host:port` (e.g., `www.somehost.net:9000`) for a remote check. Specify one or more times. |
 | `--script` | `string` | *None* | **[One of port/script/http Required]** Path to a script or binary to run. Pass if it completes with a 0 exit status. Specify one or more times. |
 | `--http` | `string` | *None* | **[One of port/script/http Required]** An HTTP(S) URL to probe. The check succeeds if it returns a 2xx status code. Specify one or more times. |
 | `--verify-payload` | `string` | *None* | **[Optional]** A regular expression to match against the body of the HTTP(S) checks. If specified, the check only succeeds if the status code is 2xx AND the response body matches the regex. Must be specified exactly once per `--http` flag if used. |
@@ -64,6 +64,7 @@ The `health-checker` is fully statically compiled via Go, meaning it has zero sy
 | `--listener` | `string` | `0.0.0.0:5500` | The IP address and port on which inbound HTTP connections will be accepted. |
 | `--script-timeout` | `int` | `5` | Timeout, in seconds, to wait for scripts to exit. Applies to all configured script targets. |
 | `--tcp-dial-timeout` | `int` | `5` | Timeout, in seconds, for dialing TCP connections for health checks. |
+| `--http-dial-timeout` | `int` | `5` | Timeout, in seconds, for dialing HTTP(S) connections for health checks. |
 | `--http-read-timeout` | `int` | `5` | Timeout, in seconds, for reading the entire HTTP request, including the body. |
 | `--http-write-timeout` | `int` | `0` (Dynamic) | Timeout, in seconds, for writing the HTTP response. Dynamically scales with script timeout + 5 if set to 0. |
 | `--http-idle-timeout` | `int` | `15` | Timeout, in seconds, to wait for the next request when keep-alives are enabled. |
@@ -73,17 +74,44 @@ The `health-checker` is fully statically compiled via Go, meaning it has zero sy
 | `--help` | `bool` | `false` | Show the help screen. |
 | `--version` | `bool` | `false` | Show the program's version. |
 
+## Understanding Timeouts
+
+Because `health-checker` is intended to act as an edge facade over critical and potentially long-running dependencies, safely managing connection limits and preventing resource starvation is extremely important. There are two primary categories of timeouts handled by the daemon:
+
+### 1. Inbound Connection Timeouts (From the Load Balancer to `health-checker`)
+
+These timeouts dictate how long the daemon will allow the calling Load Balancer to hold an open connection while waiting for a response. By default, they are tuned aggressively to protect against Slowloris-style denial-of-service attacks.
+
+*   `--http-read-timeout` (Default: `5s`): The maximum duration allowed for reading the *entire* incoming HTTP request (headers + body) from the Load Balancer. If you have a slow network or your LB sends large payloads, you may need to increase this.
+*   `--http-write-timeout` (Default: Dynamic): The maximum duration the `health-checker` is allowed to take to *write* the response back to the Load Balancer. **Crucially, this must be longer than your longest running check**, otherwise the connection will close before the check finishes. If left at `0` (the default), `health-checker` automatically sets this to: `--script-timeout + 5 seconds`.
+*   `--http-idle-timeout` (Default: `15s`): When Keep-Alives are enabled, this defines how long the server will wait for a subsequent request on an already established connection before closing it.
+
+### 2. Outbound Probe Timeouts (From `health-checker` to your application)
+
+These timeouts dictate how long the daemon will wait for your underlying services (databases, web servers, or custom scripts) to respond.
+
+*   `--script-timeout` (Default: `5s`): Applies exclusively to `--script` checks. The absolute maximum time the shell process is allowed to run. If the process takes longer, `health-checker` automatically sends a `SIGKILL` to forcefully terminate the process tree, protecting against frozen scripts. If you have a slow-booting JVM or large queries, you **must** increase this.
+*   `--tcp-dial-timeout` (Default: `5s`): Applies exclusively to `--port` checks. Defines the maximum duration the daemon will wait during the initial TCP handshake (SYN/ACK).
+*   `--http-dial-timeout` (Default: `5s`): Applies exclusively to `--http` checks. Defines the maximum duration the daemon will wait for an initial HTTP(S) connection to the target URL to be established and verified. Useful when checking slow/remote API endpoints.
+
+**Note on Early Short-Circuiting:** If you define *multiple* checks (e.g. 5 ports, 2 scripts), and one port instantly fails to connect (e.g. `Connection Refused`), `health-checker` does not wait for the other scripts or ports to hit their timeouts. The master context is instantly cancelled, all other checks are aborted, and a `504 Gateway Timeout` is returned immediately.
+
 ## Examples
 
-#### Example 1: Pure TCP Port Checking
-Run a listener on port 6000 that accepts inbound HTTP connections. When the request is received, attempt to open TCP connections to ports 5432 and 3306 in parallel. If both succeed, return `HTTP 200 OK`. If either fails, return `HTTP 504 Gateway Timeout`.
+#### Example 1: TCP Port Checking (Local and Remote)
+Run a listener on port 5000 that accepts inbound HTTP connections. When the request is received, attempt to open TCP connections to local port 8080 and remote port 443 on example.com in parallel. If both succeed, return `HTTP 200 OK`. If either fails, return `HTTP 504 Gateway Timeout`.
 
 ```bash
-health-checker --listener "0.0.0.0:5000" --port 8080 --port 80
+health-checker --listener "0.0.0.0:5000" --port 8080 --port 8181 --port example.com:443 --port 127.0.0.1:8080
+```
+
+Ports can also be specified as a list:
+```bash
+health-checker --listener "0.0.0.0:5000" --port 8080,443,80
 ```
 
 #### Example 2: Mixed TCP & Script Execution
-Attempt to open a TCP connection to port 5432 and simultaneously run a custom script with a maximum 10-second execution window. Ensure concurrent load balancer pings share the same script execution result (`--singleflight`).
+Attempt to open a TCP connection to port 8080 and simultaneously run a custom script with a maximum 10-second execution window. Ensure concurrent load balancer pings share the same script execution result (`--singleflight`).
 
 ```bash
 health-checker --listener "0.0.0.0:5000" --port 8080 --script "/path/to/script.sh" --script-timeout 10 --singleflight

@@ -14,7 +14,7 @@ import (
 // It maps the command-line flags into an internal structured format passed directly
 // to the server subsystems, decoupling the HTTP/TCP execution logic from the CLI framework.
 type Options struct {
-	Ports            []int
+	Ports            []string
 	Scripts          []Script
 	HttpChecks       []HttpCheck
 	ScriptTimeout    int
@@ -22,6 +22,7 @@ type Options struct {
 	HttpWriteTimeout int
 	HttpIdleTimeout  int
 	TcpDialTimeout   int
+	HttpDialTimeout  int
 	Singleflight     bool
 	DetailedStatus   bool
 	AllowInsecureTLS bool

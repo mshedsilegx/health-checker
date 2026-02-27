@@ -61,49 +61,49 @@ func TestParseChecksFromConfig(t *testing.T) {
 		{
 			"invalid listener",
 			[]string{"--listener"},
-			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, nil, defaultListener(), []int{8080}),
+			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, nil, defaultListener(), []string{"8080"}),
 			"flag needs an argument: --listener",
 		},
 		{
 			"valid listener",
 			[]string{"--listener", test.ListenerString(DEFAULT_LISTENER_IP_ADDRESS, 1234), "--port", "4321"},
-			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, nil, test.ListenerString(DEFAULT_LISTENER_IP_ADDRESS, 1234), []int{4321}),
+			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, nil, test.ListenerString(DEFAULT_LISTENER_IP_ADDRESS, 1234), []string{"4321"}),
 			"",
 		},
 		{
 			"single port",
 			[]string{"--port", "8080"},
-			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, nil, defaultListener(), []int{8080}),
+			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, nil, defaultListener(), []string{"8080"}),
 			"",
 		},
 		{
 			"multiple ports",
 			[]string{"--port", "8080", "--port", "8081"},
-			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, nil, defaultListener(), []int{8080, 8081}),
+			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, nil, defaultListener(), []string{"8080", "8081"}),
 			"",
 		},
 		{
 			"both port and script",
 			[]string{"--port", "8080", "--script", dummyScript + " 1234"},
-			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{dummyScript + " 1234"}, nil, defaultListener(), []int{8080}),
+			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{dummyScript + " 1234"}, nil, defaultListener(), []string{"8080"}),
 			"",
 		},
 		{
 			"single script",
 			[]string{"--script", dummyScript},
-			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{dummyScript}, nil, defaultListener(), []int{}),
+			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{dummyScript}, nil, defaultListener(), []string{}),
 			"",
 		},
 		{
 			"single script with custom timeout",
 			[]string{"--script", dummyScript, "--script-timeout", "11"},
-			createOptionsForTest(t, 11, []string{dummyScript}, nil, defaultListener(), []int{}),
+			createOptionsForTest(t, 11, []string{dummyScript}, nil, defaultListener(), []string{}),
 			"",
 		},
 		{
 			"multiple scripts",
 			[]string{"--script", dummyScript1, "--script", dummyScript2},
-			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{dummyScript1, dummyScript2}, nil, defaultListener(), []int{}),
+			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{dummyScript1, dummyScript2}, nil, defaultListener(), []string{}),
 			"",
 		},
 		{
@@ -112,7 +112,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, []options.HttpCheck{
 				{Url: "https://localhost:8443/api/v1/status", VerifyPayload: "\"status\":\\s*\"READY\""},
 				{Url: "http://localhost:8080/api/v2/health", VerifyPayload: "\"OK\""},
-			}, defaultListener(), []int{}),
+			}, defaultListener(), []string{}),
 			"",
 		},
 		{
@@ -121,7 +121,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			func() *options.Options {
 				opts := createOptionsForTest(t, DEFAULT_SCRIPT_TIMEOUT_SEC, []string{}, []options.HttpCheck{
 					{Url: "https://localhost:8443/api/v1/status"},
-				}, defaultListener(), []int{})
+				}, defaultListener(), []string{})
 				opts.AllowInsecureTLS = true
 				return opts
 			}(),
@@ -159,7 +159,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			} else {
 				assert.Nil(t, actualErr, "Unexpected error: %v", actualErr)
 				if testCase.expectedOptions.Ports != nil && len(testCase.expectedOptions.Ports) == 0 {
-					testCase.expectedOptions.Ports = make([]int, 0)
+					testCase.expectedOptions.Ports = make([]string, 0)
 				}
 				assertOptionsEqual(t, *testCase.expectedOptions, *actualOptions, "For args %v", testCase.args)
 			}
@@ -178,6 +178,7 @@ func assertOptionsEqual(t *testing.T, expected options.Options, actual options.O
 	assert.Equal(t, expected.HttpWriteTimeout, actual.HttpWriteTimeout, msgAndArgs...)
 	assert.Equal(t, expected.HttpIdleTimeout, actual.HttpIdleTimeout, msgAndArgs...)
 	assert.Equal(t, expected.TcpDialTimeout, actual.TcpDialTimeout, msgAndArgs...)
+	assert.Equal(t, expected.HttpDialTimeout, actual.HttpDialTimeout, msgAndArgs...)
 	assert.Equal(t, expected.AllowInsecureTLS, actual.AllowInsecureTLS, msgAndArgs...)
 	assert.Equal(t, expected.Scripts, actual.Scripts, msgAndArgs...)
 	assert.Equal(t, expected.HttpChecks, actual.HttpChecks, msgAndArgs...)
@@ -185,13 +186,14 @@ func assertOptionsEqual(t *testing.T, expected options.Options, actual options.O
 	assert.Equal(t, expected.Ports, actual.Ports, msgAndArgs...)
 }
 
-func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, httpChecks []options.HttpCheck, listener string, ports []int) *options.Options {
+func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, httpChecks []options.HttpCheck, listener string, ports []string) *options.Options {
 	opts := &options.Options{}
 	opts.ScriptTimeout = scriptTimeout
 	opts.HttpReadTimeout = 5
 	opts.HttpWriteTimeout = 0
 	opts.HttpIdleTimeout = 15
 	opts.TcpDialTimeout = 5
+	opts.HttpDialTimeout = 5
 
 	parsedScripts, err := options.ParseScripts(scripts)
 	assert.NoError(t, err)

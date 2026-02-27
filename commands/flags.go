@@ -16,9 +16,9 @@ const DEFAULT_LISTENER_PORT = 5500
 const DEFAULT_SCRIPT_TIMEOUT_SEC = 5
 const ENV_VAR_NAME_DEBUG_MODE = "HEALTH_CHECKER_DEBUG"
 
-var portFlag = &cli.IntSliceFlag{
+var portFlag = &cli.StringSliceFlag{
 	Name:  "port",
-	Usage: "[One of port/script Required] The port number on which a TCP connection will be attempted. Specify one or more times. Example: 8000",
+	Usage: "[One of port/script/http Required] The port number on which a TCP connection will be attempted. Can be a simple port (e.g., 8000) for a local check, or a host:port for a remote check. Specify one or more times. Example: 8000 or www.criticalsys.net:9000",
 }
 
 var scriptFlag = &cli.StringSliceFlag{
@@ -71,6 +71,12 @@ var tcpDialTimeoutFlag = &cli.IntFlag{
 	Value: 5,
 }
 
+var httpDialTimeoutFlag = &cli.IntFlag{
+	Name:  "http-dial-timeout",
+	Usage: "[Optional] Timeout, in seconds, for dialing HTTP(S) connections for health checks. Example: 5",
+	Value: 5,
+}
+
 var singleflightFlag = &cli.BoolFlag{
 	Name:  "singleflight",
 	Usage: "[Optional] Enable singleflight mode, which makes concurrent requests share the same check.",
@@ -105,6 +111,7 @@ var defaultFlags = []cli.Flag{
 	httpWriteTimeoutFlag,
 	httpIdleTimeoutFlag,
 	tcpDialTimeoutFlag,
+	httpDialTimeoutFlag,
 	singleflightFlag,
 	listenerFlag,
 	logLevelFlag,
@@ -133,10 +140,7 @@ func parseOptions(cmd *cli.Command) (*options.Options, error) {
 	}
 	logger.Logger.SetLevel(level)
 
-	ports := make([]int, 0)
-	for _, p := range cmd.IntSlice("port") {
-		ports = append(ports, int(p))
-	}
+	ports := cmd.StringSlice("port")
 
 	scriptArr := cmd.StringSlice("script")
 	scripts, err := options.ParseScripts(scriptArr)
@@ -176,6 +180,7 @@ func parseOptions(cmd *cli.Command) (*options.Options, error) {
 	httpWriteTimeout := int(cmd.Int("http-write-timeout"))
 	httpIdleTimeout := int(cmd.Int("http-idle-timeout"))
 	tcpDialTimeout := int(cmd.Int("tcp-dial-timeout"))
+	httpDialTimeout := int(cmd.Int("http-dial-timeout"))
 
 	listener := cmd.String("listener")
 	if listener == "" {
@@ -191,6 +196,7 @@ func parseOptions(cmd *cli.Command) (*options.Options, error) {
 		HttpWriteTimeout: httpWriteTimeout,
 		HttpIdleTimeout:  httpIdleTimeout,
 		TcpDialTimeout:   tcpDialTimeout,
+		HttpDialTimeout:  httpDialTimeout,
 		Singleflight:     singleflight,
 		DetailedStatus:   detailedStatus,
 		AllowInsecureTLS: allowInsecureTls,
