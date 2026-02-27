@@ -1,10 +1,9 @@
-module github.com/gruntwork-io/health-check
+module github.com/gruntwork-io/health-checker
 
 go 1.24.0
 
 require (
 	github.com/gruntwork-io/go-commons v0.17.2
-	github.com/gruntwork-io/health-checker v0.0.8
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.6.2
@@ -22,5 +21,3 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/gruntwork-io/health-checker => ./
