@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os/exec"
+	"regexp"
 	"sync"
 	"time"
 
@@ -188,6 +191,29 @@ func runChecks(opts *options.Options) *httpResponse {
 		}(script)
 	}
 
+	for _, httpCheck := range opts.HttpChecks {
+		waitGroup.Add(1)
+		go func(httpCheck options.HttpCheck) {
+			defer waitGroup.Done()
+
+			err := attemptHttpConnection(masterCtx, httpCheck, opts)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+
+				logger.Warnf("HTTP check to %s FAILED: %s", httpCheck.Url, err)
+				errorMu.Lock()
+				errorMessages = append(errorMessages, fmt.Sprintf("HTTP check to %s failed: %s", httpCheck.Url, err.Error()))
+				errorMu.Unlock()
+
+				masterCancel()
+			} else {
+				logger.Infof("HTTP check to %s successful", httpCheck.Url)
+			}
+		}(httpCheck)
+	}
+
 	waitGroup.Wait()
 
 	elapsedTime := time.Since(startTime).String()
@@ -247,6 +273,69 @@ func attemptTcpConnection(ctx context.Context, port int, opts *options.Options) 
 	defer func() {
 		_ = conn.Close()
 	}()
+
+	return nil
+}
+
+// Attempt to perform an HTTP(S) GET request and optionally verify the payload
+func attemptHttpConnection(ctx context.Context, httpCheck options.HttpCheck, opts *options.Options) error {
+	logger := opts.Logger
+	logger.Infof("Attempting to perform HTTP check to %s...", httpCheck.Url)
+
+	defaultTimeout := time.Duration(opts.TcpDialTimeout) * time.Second
+	if defaultTimeout == 0 {
+		defaultTimeout = time.Second * 5
+	}
+
+	// Create a new client to avoid sharing state or keeping keep-alives open unnecessarily
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if opts.AllowInsecureTLS {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402
+	}
+
+	client := &http.Client{
+		Timeout:   defaultTimeout,
+		Transport: transport,
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, httpCheck.Url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+
+	/* #nosec G107 G704 */
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	// Discard the body if we don't need it, but always read to allow connection reuse/clean closure
+	var bodyBytes []byte
+	if httpCheck.VerifyPayload != "" {
+		bodyBytes, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read HTTP response body: %w", err)
+		}
+	} else {
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("HTTP check returned non-2xx status code: %d", resp.StatusCode)
+	}
+
+	if httpCheck.VerifyPayload != "" {
+		matched, err := regexp.Match(httpCheck.VerifyPayload, bodyBytes)
+		if err != nil {
+			return fmt.Errorf("invalid regular expression '%s': %w", httpCheck.VerifyPayload, err)
+		}
+		if !matched {
+			return fmt.Errorf("HTTP response body did not match verify-payload regex '%s'", httpCheck.VerifyPayload)
+		}
+	}
 
 	return nil
 }

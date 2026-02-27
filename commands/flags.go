@@ -23,7 +23,22 @@ var portFlag = &cli.IntSliceFlag{
 
 var scriptFlag = &cli.StringSliceFlag{
 	Name:  "script",
-	Usage: "[One of port/script Required] The path to script that will be run. Specify one or more times. Example: \"/usr/local/bin/health-check.sh --http-port 8000\"",
+	Usage: "[One of port/script/http Required] The path to script that will be run. Specify one or more times. Example: \"/usr/local/bin/health-check.sh --http-port 8000\"",
+}
+
+var httpCheckFlag = &cli.StringSliceFlag{
+	Name:  "http",
+	Usage: "[One of port/script/http Required] An HTTP(S) URL to probe. The check succeeds if it returns a 2xx status code. Specify one or more times. Example: \"https://localhost:8080/health\"",
+}
+
+var httpCheckVerifyPayloadFlag = &cli.StringSliceFlag{
+	Name:  "verify-payload",
+	Usage: "[Optional] A regular expression to match against the body of the HTTP(S) checks. If specified, the check only succeeds if the status code is 2xx AND the response body matches the regex. Must be specified exactly once per --http flag if used. Example: \"ready\"",
+}
+
+var allowInsecureTlsFlag = &cli.BoolFlag{
+	Name:  "allow-insecure-tls",
+	Usage: "[Optional] Skip TLS certificate verification for HTTPS checks. Use this if you are probing endpoints with self-signed certificates or broken trust chains.",
 }
 
 var scriptTimeoutFlag = &cli.IntFlag{
@@ -81,6 +96,9 @@ var logLevelFlag = &cli.StringFlag{
 var defaultFlags = []cli.Flag{
 	portFlag,
 	scriptFlag,
+	httpCheckFlag,
+	httpCheckVerifyPayloadFlag,
+	allowInsecureTlsFlag,
 	scriptTimeoutFlag,
 	detailedStatusFlag,
 	httpReadTimeoutFlag,
@@ -126,12 +144,32 @@ func parseOptions(cmd *cli.Command) (*options.Options, error) {
 		return nil, err
 	}
 
-	if len(ports) == 0 && len(scripts) == 0 {
-		return nil, OneOfParamsRequired{portFlag.Name, scriptFlag.Name}
+	httpArr := cmd.StringSlice("http")
+	verifyPayloads := cmd.StringSlice("verify-payload")
+
+	var httpChecks []options.HttpCheck
+	if len(verifyPayloads) > 0 && len(verifyPayloads) != len(httpArr) {
+		return nil, fmt.Errorf("if --verify-payload is specified, it must be specified exactly once per --http flag")
+	}
+
+	for i, url := range httpArr {
+		verifyPayload := ""
+		if len(verifyPayloads) > i {
+			verifyPayload = verifyPayloads[i]
+		}
+		httpChecks = append(httpChecks, options.HttpCheck{
+			Url:           url,
+			VerifyPayload: verifyPayload,
+		})
+	}
+
+	if len(ports) == 0 && len(scripts) == 0 && len(httpChecks) == 0 {
+		return nil, OneOfParamsRequired{portFlag.Name, scriptFlag.Name, httpCheckFlag.Name}
 	}
 
 	singleflight := cmd.Bool("singleflight")
 	detailedStatus := cmd.Bool("detailed-status")
+	allowInsecureTls := cmd.Bool("allow-insecure-tls")
 
 	scriptTimeout := int(cmd.Int("script-timeout"))
 	httpReadTimeout := int(cmd.Int("http-read-timeout"))
@@ -147,6 +185,7 @@ func parseOptions(cmd *cli.Command) (*options.Options, error) {
 	return &options.Options{
 		Ports:            ports,
 		Scripts:          scripts,
+		HttpChecks:       httpChecks,
 		ScriptTimeout:    scriptTimeout,
 		HttpReadTimeout:  httpReadTimeout,
 		HttpWriteTimeout: httpWriteTimeout,
@@ -154,6 +193,7 @@ func parseOptions(cmd *cli.Command) (*options.Options, error) {
 		TcpDialTimeout:   tcpDialTimeout,
 		Singleflight:     singleflight,
 		DetailedStatus:   detailedStatus,
+		AllowInsecureTLS: allowInsecureTls,
 		Listener:         listener,
 		Logger:           logger.Logger,
 	}, nil
@@ -185,8 +225,9 @@ func (paramName MissingParam) Error() string {
 type OneOfParamsRequired struct {
 	param1 string
 	param2 string
+	param3 string
 }
 
 func (paramNames OneOfParamsRequired) Error() string {
-	return fmt.Sprintf("Missing required parameter, one of --%s / --%s required", string(paramNames.param1), string(paramNames.param2))
+	return fmt.Sprintf("Missing required parameter, one of --%s / --%s / --%s required", string(paramNames.param1), string(paramNames.param2), string(paramNames.param3))
 }

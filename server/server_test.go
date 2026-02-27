@@ -60,6 +60,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 		numports       int
 		failport       bool
 		scripts        []string
+		httpChecks     []options.HttpCheck
 		scriptTimeout  int
 		expectedStatus int
 	}{
@@ -68,6 +69,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			1,
 			false,
 			[]string{},
+			nil,
 			5,
 			200,
 		},
@@ -76,6 +78,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			3,
 			false,
 			[]string{},
+			nil,
 			5,
 			200,
 		},
@@ -84,6 +87,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			3,
 			true,
 			[]string{},
+			nil,
 			5,
 			504,
 		},
@@ -92,6 +96,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			0,
 			false,
 			[]string{okScript},
+			nil,
 			5,
 			200,
 		},
@@ -100,6 +105,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			0,
 			false,
 			[]string{failScript},
+			nil,
 			5,
 			504,
 		},
@@ -108,6 +114,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			0,
 			false,
 			[]string{okScript, okScript2},
+			nil,
 			5,
 			200,
 		},
@@ -116,6 +123,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			0,
 			false,
 			[]string{okScript, failScript},
+			nil,
 			5,
 			504,
 		},
@@ -124,8 +132,45 @@ func TestParseChecksFromConfig(t *testing.T) {
 			1,
 			false,
 			[]string{okScript},
+			nil,
 			5,
 			200,
+		},
+		{
+			"http ok",
+			0,
+			false,
+			[]string{},
+			[]options.HttpCheck{{Url: "https://httpbin.org/status/200"}},
+			5,
+			200,
+		},
+		{
+			"http fail 500",
+			0,
+			false,
+			[]string{},
+			[]options.HttpCheck{{Url: "https://httpbin.org/status/500"}},
+			5,
+			504,
+		},
+		{
+			"http ok with matching payload",
+			0,
+			false,
+			[]string{},
+			[]options.HttpCheck{{Url: "https://httpbin.org/get", VerifyPayload: `"url": "https://httpbin.org/get"`}},
+			5,
+			200,
+		},
+		{
+			"http fail with non-matching payload",
+			0,
+			false,
+			[]string{},
+			[]options.HttpCheck{{Url: "https://httpbin.org/get", VerifyPayload: "this-will-not-match-anything"}},
+			5,
+			504,
 		},
 	}
 
@@ -173,7 +218,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 
 			defer closeListeners(t, listeners)
 
-			opts := createOptionsForTest(t, testCase.scriptTimeout, testCase.scripts, listenerString, checkPorts)
+			opts := createOptionsForTest(t, testCase.scriptTimeout, testCase.scripts, testCase.httpChecks, listenerString, checkPorts)
 
 			// Run the checks and verify the status code
 			response := runChecks(opts)
@@ -235,7 +280,7 @@ func TestSingleflight(t *testing.T) {
 			}()
 
 			// Fire the request off to the dummy sleep script to ensure it takes a while
-			opts := createOptionsForTest(t, 10, []string{sleepScript}, test.DEFAULT_LISTENER_ADDRESS, []int{port})
+			opts := createOptionsForTest(t, 10, []string{sleepScript}, nil, test.DEFAULT_LISTENER_ADDRESS, []int{port})
 			opts.Singleflight = testCase.singleflight
 
 			handler := httpHandler(opts)
@@ -295,7 +340,7 @@ func handleRequests(t *testing.T, l net.Listener, counter *int32) {
 	}
 }
 
-func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, listener string, ports []int) *options.Options {
+func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, httpChecks []options.HttpCheck, listener string, ports []int) *options.Options {
 	logger := logging.GetLogger("health-checker", "v0.0.0")
 	logger.Logger.Out = os.Stdout
 	logger.Logger.Level = logrus.InfoLevel
@@ -307,6 +352,7 @@ func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, lis
 	parsedScripts, err := options.ParseScripts(scripts)
 	assert.NoError(t, err, "Failed to parse test scripts")
 	opts.Scripts = parsedScripts
+	opts.HttpChecks = httpChecks
 
 	opts.Listener = listener
 	opts.Ports = ports

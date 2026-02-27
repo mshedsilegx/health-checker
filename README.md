@@ -56,8 +56,11 @@ The `health-checker` is fully statically compiled via Go, meaning it has zero sy
 
 | Option | Type | Default | Description |
 | ------ | ---- | ------- | ----------- |
-| `--port` | `int` | *None* | **[One of port/script Required]** The port number on which a TCP connection will be attempted. Specify one or more times. |
-| `--script` | `string` | *None* | **[One of port/script Required]** Path to a script or binary to run. Pass if it completes with a 0 exit status. Specify one or more times. |
+| `--port` | `int` | *None* | **[One of port/script/http Required]** The port number on which a TCP connection will be attempted. Specify one or more times. |
+| `--script` | `string` | *None* | **[One of port/script/http Required]** Path to a script or binary to run. Pass if it completes with a 0 exit status. Specify one or more times. |
+| `--http` | `string` | *None* | **[One of port/script/http Required]** An HTTP(S) URL to probe. The check succeeds if it returns a 2xx status code. Specify one or more times. |
+| `--verify-payload` | `string` | *None* | **[Optional]** A regular expression to match against the body of the HTTP(S) checks. If specified, the check only succeeds if the status code is 2xx AND the response body matches the regex. Must be specified exactly once per `--http` flag if used. |
+| `--allow-insecure-tls` | `bool` | `false` | **[Optional]** Skip TLS certificate verification for HTTPS checks. Use this if you are probing endpoints with self-signed certificates or broken trust chains. |
 | `--listener` | `string` | `0.0.0.0:5500` | The IP address and port on which inbound HTTP connections will be accepted. |
 | `--script-timeout` | `int` | `5` | Timeout, in seconds, to wait for scripts to exit. Applies to all configured script targets. |
 | `--tcp-dial-timeout` | `int` | `5` | Timeout, in seconds, for dialing TCP connections for health checks. |
@@ -105,3 +108,15 @@ health-checker --listener "0.0.0.0:5000" \
     "Script /usr/local/bin/zk-check.sh failed: exit status 1 (Output: Connection refused)"
   ]
 }
+```
+
+#### Example 4: HTTP Endpoint Polling with Regex Payload Validation
+Ensure that multiple local background services are reachable and actively responding with specific payloads before marking the node as healthy. The `--verify-payload` flag maps positionally (1-to-1) to the `--http` flags.
+
+```bash
+health-checker --listener "0.0.0.0:5000" \
+  --http "https://localhost:8443/api/v1/status" \
+  --verify-payload "\"status\":\s*\"READY\"" \
+  --http "http://localhost:8080/api/v2/health" \
+  --verify-payload "\"OK\""
+```

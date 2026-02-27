@@ -16,6 +16,7 @@ import (
 type Options struct {
 	Ports            []int
 	Scripts          []Script
+	HttpChecks       []HttpCheck
 	ScriptTimeout    int
 	HttpReadTimeout  int
 	HttpWriteTimeout int
@@ -23,6 +24,7 @@ type Options struct {
 	TcpDialTimeout   int
 	Singleflight     bool
 	DetailedStatus   bool
+	AllowInsecureTLS bool
 	Listener         string
 	Logger           *logrus.Logger
 }
@@ -30,6 +32,11 @@ type Options struct {
 type Script struct {
 	Name string
 	Args []string
+}
+
+type HttpCheck struct {
+	Url           string
+	VerifyPayload string
 }
 
 // allowedScriptPattern enforces that scripts only contain safe alphanumeric characters,
