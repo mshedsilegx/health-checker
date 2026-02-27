@@ -1,23 +1,26 @@
 package commands
 
 import (
+	"context"
+
 	"github.com/gruntwork-io/go-commons/errors"
 	"github.com/gruntwork-io/health-checker/server"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v3"
 )
 
-// Create the CLI app with all commands (in this case a single one!), flags, and usage text configured.
-func CreateCli(version string) *cli.App {
-	app := cli.NewApp()
+// CreateCli initializes the root urfave/cli/v3 Command, parsing flags, metadata, and mapping the default action
+// to the runHealthChecker method. It also customizes the help template to remove unused sections.
+func CreateCli(version string) *cli.Command {
+	app := &cli.Command{}
 
-	app.CustomAppHelpTemplate = ` NAME:
+	app.CustomHelpTemplate = ` NAME:
     {{.Name}} - {{.Usage}}
 
  USAGE:
     {{.HelpName}} {{if .Flags}}[options]{{end}}
     {{if .Commands}}
  OPTIONS:
-    {{range .Flags}}{{.}}
+    {{range .VisibleFlags}}{{.}}
     {{end}}{{end}}{{if .Copyright }}
  COPYRIGHT:
     {{.Copyright}}
@@ -31,8 +34,7 @@ func CreateCli(version string) *cli.App {
 `
 
 	app.Name = "health-checker"
-	app.HelpName = app.Name
-	app.Author = "Gruntwork, Inc. <www.gruntwork.io> | https://github.com/gruntwork-io/health-checker"
+	//	app.Author = "Gruntwork, Inc. <www.gruntwork.io> | https://github.com/gruntwork-io/health-checker"
 	app.Version = version
 	app.Usage = "A simple HTTP server that will return 200 OK if the configured checks are all successful."
 	app.Commands = nil
@@ -42,12 +44,12 @@ func CreateCli(version string) *cli.App {
 	return app
 }
 
-func runHealthChecker(cliContext *cli.Context) error {
-	if allCliOptionsEmpty(cliContext) {
-		cli.ShowAppHelpAndExit(cliContext, 0)
+func runHealthChecker(ctx context.Context, cmd *cli.Command) error {
+	if allCliOptionsEmpty(cmd) {
+		cli.ShowAppHelpAndExit(cmd, 0)
 	}
 
-	opts, err := parseOptions(cliContext)
+	opts, err := parseOptions(cmd)
 	if isDebugMode() {
 		opts.Logger.Infof("Note: To enable debug mode, set %s to \"true\"", ENV_VAR_NAME_DEBUG_MODE)
 		return err

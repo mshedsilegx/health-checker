@@ -1,95 +1,107 @@
-[![Maintained by Gruntwork.io](https://img.shields.io/badge/maintained%20by-gruntwork.io-%235849a6.svg)](https://gruntwork.io/?ref=repo_health-checker)
-
 # health-checker
 
-A simple HTTP server that will return `200 OK` if the configured checks are all successful.  If any of the checks fail,
-it will return `HTTP 504 Gateway Not Found`.
+## Application Overview and Objectives
 
-## Motivation
+`health-checker` is a lightweight, cross-platform daemon designed to accurately report the true health of a server by executing multi-layered concurrent probes when pinged by a Load Balancer.
 
-We were setting up an AWS [Auto Scaling Group](http://docs.aws.amazon.com/autoscaling/latest/userguide/AutoScalingGroup.html)
-(ASG) fronted by a [Load Balancer](https://aws.amazon.com/documentation/elastic-load-balancing/) that used a
-[Health Check](http://docs.aws.amazon.com/elasticloadbalancing/latest/network/target-group-health-checks.html#) to
-determine if the server is healthy. Each server in the ASG runs two services, which means that a server is "healthy" if
-the TCP Listeners of both services are successfully accepting connections. But the Load Balancer Health Check is limited to
-a single TCP port, or an HTTP(S) endpoint. As a result, our use case just isn't supported natively by AWS.
+A common challenge when configuring cloud infrastructure (such as Auto Scaling Groups) is that Load Balancers are traditionally limited to evaluating a single TCP port or a single HTTP endpoint to determine instance health. However, modern applications often run multiple services per instance, and validating the system requires verifying multiple database connections, internal caches, and background processes. 
 
-We wrote health-checker so that we could run a daemon on the server that reports the true health of the server by
-attempting to open a TCP connection to more than one port when it receives an inbound HTTP request on the given listener.
+`health-checker` solves this by acting as an HTTP facade. When it receives a health check ping from a Load Balancer, it simultaneously executes an array of user-defined TCP connection attempts and custom executable scripts. 
 
-Using the `--script` -option, the `health-checker` can be extended to check many other targets. One concrete example is monitoring
-`ZooKeeper` node status during rolling deployment. Just polling the `ZooKeeper`'s TCP client port doesn't necessarily guarantee
-that the node has (re-)joined the cluster. Using the `health-check` with a custom script target, we can
-[monitor ZooKeeper](https://zookeeper.apache.org/doc/r3.4.8/zookeeperAdmin.html#sc_monitoring) using the
-[4 letter words](https://zookeeper.apache.org/doc/r3.4.8/zookeeperAdmin.html#sc_zkCommands), ensuring we report health back to the
-[Load Balancer](https://aws.amazon.com/documentation/elastic-load-balancing/) correctly.
+**Objectives:**
+- **Aggregate Health Polling:** If **all** TCP ports accept connections and **all** scripts execute successfully (exit code 0), it returns an `HTTP 200 OK`.
+- **Early Short-Circuiting:** If **any** single probe fails, it immediately aborts the remaining active probes and swiftly returns an `HTTP 504 Gateway Timeout`.
+- **Performance at Scale:** Prevents resource exhaustion from request bursts via Singleflight caching, ensuring concurrent load balancer pings share probe execution states rather than duplicating expensive background processes.
 
-## How It Works
+## Architecture and Design Choices
 
-When health-checker is started, it will listen for inbound HTTP requests for any URL on the IP address and port specified
-by `--listener`. When it receives a request, it will attempt to open TCP connections to each of the ports specified by
-an instance of `--port` and/or execute the script target specified by `--script`. If all configured checks - all TCP
-connections and zero exit status for the script - succeed, it will return `HTTP 200 OK`. If any of the checks fail,
-it will return `HTTP 504 Gateway Not Found`.
+The application is written in Go to maximize concurrency, safety, and cross-platform native execution. 
 
-Configure your AWS Health Check to only pass the Health Check on `HTTP 200 OK`. Now when an HTTP Health Check request
-comes in, all desired TCP ports will be checked and the script target executed.
+- **Concurrency Model:** Uses `goroutines` and `sync.WaitGroup` to launch all TCP and script probes entirely in parallel, maximizing speed and minimizing latency.
+- **Master Cancellation Context:** An early short-circuiting mechanism uses `context.WithCancel`. If a single health check branch fails, the `masterCancel()` function is triggered, immediately terminating all other running system processes and TCP dials safely.
+- **Strict Input Sanitization:** Command-line arguments for scripts are strictly evaluated against an allowlist pattern (only alphanumeric chars). It uses robust parsing to properly handle file paths containing spaces. The application also actively guarantees only existing, valid binary files on disk are executed, mitigating command injection vulnerabilities (it will refuse to execute pure shell built-ins without a valid absolute path).
+- **Singleflight Pattern:** Integrated using `golang.org/x/sync/singleflight`, if multiple identical health check HTTP requests arrive simultaneously (a common occurrence with multi-AZ load balancers), `health-checker` executes the expensive underlying scripts exactly *once*, caching and broadcasting the shared result to all waiting requests.
+- **Graceful Timeouts:** Independent read, write, idle, TCP, and Script process timeouts are dynamically mapped and bounded to prevent hanging routines.
 
-For stability, we recommend running health-checker under a process supervisor such as [supervisord](http://supervisord.org/)
-or [systemd](https://www.freedesktop.org/wiki/Software/systemd/) to automatically restart health-checker in the unlikely
-case that it fails.
+### Understanding Singleflight (`--singleflight`)
 
-## Installation
+The Singleflight pattern is a concurrency mechanism designed to prevent resource exhaustion from concurrent request bursts. When enabled via the `--singleflight` flag, it ensures that only one execution of your health checks occurs at any given time, regardless of how many concurrent inbound requests the server receives.
 
-Just download the latest release for your OS on the [Releases Page](https://github.com/gruntwork-io/health-checker/releases).
+**How it works:**
+1. A health check request arrives from the Load Balancer. The `health-checker` begins running the configured TCP probes and scripts.
+2. While those initial checks are still running, 5 more health check requests arrive simultaneously from other subnets or load balancer nodes.
+3. Instead of spawning 5 new duplicate sets of scripts and TCP dials, `health-checker` holds the 5 new requests in a waiting state.
+4. When the original check finishes, the single result (e.g., `HTTP 200 OK`) is instantly broadcasted and returned to all 6 waiting requests simultaneously.
 
-## Usage
+**When to use it:**
+- **Heavy Script Executions:** If your `--script` arguments trigger CPU or memory-intensive actions (e.g., launching Java/JVM binaries, querying large internal databases, or running heavy Python scripts), running them concurrently could inadvertently cause a self-inflicted Denial of Service (DoS) on your instance. Singleflight prevents this resource exhaustion.
+- **Multi-AZ Load Balancing:** In environments like AWS where an instance might be registered to multiple Target Groups, or probed by multiple Load Balancer nodes across Availability Zones simultaneously, the instance might receive a tight burst of concurrent health check pings exactly at the same interval. `--singleflight` ensures this burst translates to only a single system-level check on the machine.
 
-```
-health-checker [options]
-```
+**When NOT to use it:**
+- If your checks are incredibly lightweight (e.g., only pure TCP port checks on localhost) and you require strictly independent, un-cached validation execution for every single individual HTTP request.
 
-#### Options
+## Dependencies
 
-| Option | Description | Default
-| ------ | ----------- | -------
-| `--port` | The port number on which a TCP connection will be attempted. Specify one or more times. | |
-| `--listener` |  The IP address and port on which inbound HTTP connections will be accepted. | `0.0.0.0:5000`
-| `--log-level` | Set the log level to LEVEL. Must be one of: `panic`, `fatal`, `error,` `warning`, `info`, or `debug` | `info`
-| `--help` | Show the help screen | |
-| `--script` | Path to script to run - will pass if it completes within configured timeout with a zero exit status. Specify one or more times. | |
-| `--script-timeout` | Timeout, in seconds, to wait for the scripts to exit. Applies to all configured script targets. | `5` |
-| `--singleflight` | Enables single flight mode, which allows concurrent health check requests to share the results of a single check.  | |
-| `--version` | Show the program's version | |
+The `health-checker` is fully statically compiled via Go, meaning it has zero system-level dependencies for execution.
 
-If you execute a shell script, ensure you have a `shebang` line in your script, otherwise the script will fail with an `exec format error`.
+**Go Module Dependencies:**
+- `github.com/urfave/cli/v3` - Modern CLI framework used for parsing command-line flags and handling configuration routing.
+- `golang.org/x/sync/singleflight` - Used to de-duplicate parallel inbound health checks.
+- `github.com/sirupsen/logrus` - Used for structured, leveled logging.
+- `github.com/gruntwork-io/go-commons` - Gruntwork's shared library for enhanced error stack tracing.
 
-#### Example 1
+## Command Line Arguments
 
-Run a listener on port 6000 that accepts all inbound HTTP connections for any URL. When the request is received,
-attempt to open TCP connections to port 5432 and 3306. If both succeed, return `HTTP 200 OK`. If any fails, return `HTTP
-504 Gateway Not Found`.
+`health-checker [options]`
 
-```
-health-checker --listener "0.0.0.0:6000" --port 5432 --port 3306
-```
+| Option | Type | Default | Description |
+| ------ | ---- | ------- | ----------- |
+| `--port` | `int` | *None* | **[One of port/script Required]** The port number on which a TCP connection will be attempted. Specify one or more times. |
+| `--script` | `string` | *None* | **[One of port/script Required]** Path to a script or binary to run. Pass if it completes with a 0 exit status. Specify one or more times. |
+| `--listener` | `string` | `0.0.0.0:5500` | The IP address and port on which inbound HTTP connections will be accepted. |
+| `--script-timeout` | `int` | `5` | Timeout, in seconds, to wait for scripts to exit. Applies to all configured script targets. |
+| `--tcp-dial-timeout` | `int` | `5` | Timeout, in seconds, for dialing TCP connections for health checks. |
+| `--http-read-timeout` | `int` | `5` | Timeout, in seconds, for reading the entire HTTP request, including the body. |
+| `--http-write-timeout` | `int` | `0` (Dynamic) | Timeout, in seconds, for writing the HTTP response. Dynamically scales with script timeout + 5 if set to 0. |
+| `--http-idle-timeout` | `int` | `15` | Timeout, in seconds, to wait for the next request when keep-alives are enabled. |
+| `--singleflight` | `bool` | `false` | Enables single flight mode, allowing concurrent health check requests to share the results of a single check pass. |
+| `--detailed-status` | `bool` | `false` | Returns a detailed JSON payload indicating elapsed time and specific error messages if probes fail, instead of plain text. |
+| `--log-level` | `string` | `info` | Set the log level. Must be one of: `panic`, `fatal`, `error`, `warning`, `info`, `debug`, or `trace`. |
+| `--help` | `bool` | `false` | Show the help screen. |
+| `--version` | `bool` | `false` | Show the program's version. |
 
-#### Example 2
+## Examples
 
-Run a listener on port 6000 that accepts all inbound HTTP connections for any URL. When the request is received,
-attempt to open TCP connection to port 5432 and run the script with a 10 second timout. If TCP connection succeeds and script exit code is zero, return `HTTP 200 OK`. If TCP connection fails or non-zero exit code for the script, return `HTTP
-504 Gateway Not Found`.
+#### Example 1: Pure TCP Port Checking
+Run a listener on port 6000 that accepts inbound HTTP connections. When the request is received, attempt to open TCP connections to ports 5432 and 3306 in parallel. If both succeed, return `HTTP 200 OK`. If either fails, return `HTTP 504 Gateway Timeout`.
 
-```
-health-checker --listener "0.0.0.0:6000" --port 5432 --script /path/to/script.sh --script-timeout 10
+```bash
+health-checker --listener "0.0.0.0:5000" --port 8080 --port 80
 ```
 
-#### Example 3
+#### Example 2: Mixed TCP & Script Execution
+Attempt to open a TCP connection to port 5432 and simultaneously run a custom script with a maximum 10-second execution window. Ensure concurrent load balancer pings share the same script execution result (`--singleflight`).
 
-Run a listener on port 6000 that accepts all inbound HTTP connections for any URL. When the request is received,
-attempt to run the configured scripts. If both return exit code zero, return `HTTP 200 OK`. If either returns non-zero exit code, return `HTTP
-504 Gateway Not Found`.
+```bash
+health-checker --listener "0.0.0.0:5000" --port 8080 --script "/path/to/script.sh" --script-timeout 10 --singleflight
+```
 
+#### Example 3: Multiple Scripts with Detailed Debug JSON
+Execute two separate cluster verification scripts. If either script exits with a non-zero code, output a detailed JSON object indicating exactly which script failed, the elapsed time, and the captured `stderr` output to assist with Load Balancer debugging.
+
+```bash
+health-checker --listener "0.0.0.0:5000" \
+  --script "/usr/local/bin/exhibitor-check.sh" \
+  --script "/usr/local/bin/zk-check.sh" \
+  --detailed-status
 ```
-health-checker --listener "0.0.0.0:6000" --script "/usr/local/bin/exhibitor-health-check.sh --exhibitor-port 8080" --script "/usr/local/bin/zk-health-check.sh --zk-port 2191"
-```
+
+*Example of `--detailed-status` output on failure:*
+```json
+{
+  "status": "At least one health check failed",
+  "elapsed_time": "5.002s",
+  "errors": [
+    "Script /usr/local/bin/zk-check.sh failed: exit status 1 (Output: Connection refused)"
+  ]
+}

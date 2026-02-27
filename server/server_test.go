@@ -1,11 +1,13 @@
 package server
 
 import (
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,7 +19,40 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func createDummyScript(t *testing.T, dir string, name string, content string) string {
+	scriptPath := filepath.Join(dir, name)
+	if runtime.GOOS == "windows" {
+		scriptPath += ".bat"
+	} else {
+		scriptPath += ".sh"
+	}
+	err := os.WriteFile(scriptPath, []byte(content), 0755)
+	if err != nil {
+		t.Fatalf("Failed to create dummy script: %v", err)
+	}
+	return filepath.ToSlash(scriptPath)
+}
+
+func TestStartHttpServerInvalidListener(t *testing.T) {
+	opts := &options.Options{
+		Listener: "256.256.256.256:9999999", // Invalid IP and port to force listen failure
+		Logger:   logging.GetLogger("test", "v0.0.0").Logger,
+	}
+
+	err := StartHttpServer(opts)
+	assert.Error(t, err, "Expected StartHttpServer to fail with invalid listener")
+}
+
 func TestParseChecksFromConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+	}()
+
+	okScript := createDummyScript(t, tmpDir, "ok_script", "echo ok")
+	failScript := createDummyScript(t, tmpDir, "fail_script", "exit 1")
+	okScript2 := createDummyScript(t, tmpDir, "ok_script2", "echo ok2")
+
 	// Will *not* run parallel because we're opening random tcp ports
 	// and want to avoid port clashes
 	testCases := []struct {
@@ -56,7 +91,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			"script ok",
 			0,
 			false,
-			[]string{"echo 'hello'"},
+			[]string{okScript},
 			5,
 			200,
 		},
@@ -64,7 +99,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			"script fail",
 			0,
 			false,
-			[]string{"lskdf"},
+			[]string{failScript},
 			5,
 			504,
 		},
@@ -72,7 +107,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			"multi script ok",
 			0,
 			false,
-			[]string{"echo 'hello1'", "echo 'hello2'"},
+			[]string{okScript, okScript2},
 			5,
 			200,
 		},
@@ -80,7 +115,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			"multi script one fail",
 			0,
 			false,
-			[]string{"echo 'hello1'", "lskdf"},
+			[]string{okScript, failScript},
 			5,
 			504,
 		},
@@ -88,7 +123,7 @@ func TestParseChecksFromConfig(t *testing.T) {
 			"script and port",
 			1,
 			false,
-			[]string{"echo 'hello1'"},
+			[]string{okScript},
 			5,
 			200,
 		},
@@ -166,6 +201,16 @@ func TestSingleflight(t *testing.T) {
 		},
 	}
 
+	tmpDir := t.TempDir()
+	defer func() {
+		_ = os.RemoveAll(tmpDir)
+	}()
+
+	sleepScript := createDummyScript(t, tmpDir, "sleep_script", "ping 127.0.0.1 -n 2")
+	if runtime.GOOS != "windows" {
+		sleepScript = createDummyScript(t, tmpDir, "sleep_script", "sleep 1")
+	}
+
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			requestCount := int32(0)
@@ -185,10 +230,12 @@ func TestSingleflight(t *testing.T) {
 
 			// Accept incoming connections, and count how many we receive
 			go handleRequests(t, l, &requestCount)
-			defer l.Close()
+			defer func() {
+				_ = l.Close()
+			}()
 
-			// Fire the request off to /bin/sleep to ensure it takes a while
-			opts := createOptionsForTest(t, 10, []string{"/bin/sleep 1"}, test.DEFAULT_LISTENER_ADDRESS, []int{port})
+			// Fire the request off to the dummy sleep script to ensure it takes a while
+			opts := createOptionsForTest(t, 10, []string{sleepScript}, test.DEFAULT_LISTENER_ADDRESS, []int{port})
 			opts.Singleflight = testCase.singleflight
 
 			handler := httpHandler(opts)
@@ -208,7 +255,8 @@ func TestSingleflight(t *testing.T) {
 						assert.FailNow(t, "failed to perform HTTP request: %v", err)
 					}
 
-					ioutil.ReadAll(resp.Body)
+					_, _ = io.ReadAll(resp.Body)
+					_ = resp.Body.Close() // Explicitly close to prevent resource leaks
 					wg.Done()
 				}()
 			}
@@ -232,7 +280,7 @@ func closeListeners(t *testing.T, listeners []net.Listener) {
 func handleRequests(t *testing.T, l net.Listener, counter *int32) {
 	for {
 		// Listen for an incoming connection.
-		l.Accept()
+		_, _ = l.Accept()
 		// We don't log these when testing because we're forcibly closing the socket
 		// from the outside. If you're debugging and wish to enable the logging,
 		// uncomment the lines below
@@ -248,14 +296,18 @@ func handleRequests(t *testing.T, l net.Listener, counter *int32) {
 }
 
 func createOptionsForTest(t *testing.T, scriptTimeout int, scripts []string, listener string, ports []int) *options.Options {
-	logger := logging.GetLogger("health-checker")
-	logger.Out = os.Stdout
-	logger.Level = logrus.InfoLevel
+	logger := logging.GetLogger("health-checker", "v0.0.0")
+	logger.Logger.Out = os.Stdout
+	logger.Logger.Level = logrus.InfoLevel
 
 	opts := &options.Options{}
-	opts.Logger = logger
+	opts.Logger = logger.Logger
 	opts.ScriptTimeout = scriptTimeout
-	opts.Scripts = options.ParseScripts(scripts)
+
+	parsedScripts, err := options.ParseScripts(scripts)
+	assert.NoError(t, err, "Failed to parse test scripts")
+	opts.Scripts = parsedScripts
+
 	opts.Listener = listener
 	opts.Ports = ports
 	return opts

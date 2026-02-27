@@ -8,7 +8,7 @@ import (
 	"github.com/gruntwork-io/go-commons/logging"
 	"github.com/gruntwork-io/health-checker/options"
 	"github.com/sirupsen/logrus"
-	"github.com/urfave/cli"
+	"github.com/urfave/cli/v3"
 )
 
 const DEFAULT_LISTENER_IP_ADDRESS = "0.0.0.0"
@@ -16,34 +16,63 @@ const DEFAULT_LISTENER_PORT = 5500
 const DEFAULT_SCRIPT_TIMEOUT_SEC = 5
 const ENV_VAR_NAME_DEBUG_MODE = "HEALTH_CHECKER_DEBUG"
 
-var portFlag = cli.IntSliceFlag{
+var portFlag = &cli.IntSliceFlag{
 	Name:  "port",
-	Usage: fmt.Sprintf("[One of port/script Required] The port number on which a TCP connection will be attempted. Specify one or more times. Example: 8000"),
+	Usage: "[One of port/script Required] The port number on which a TCP connection will be attempted. Specify one or more times. Example: 8000",
 }
 
-var scriptFlag = cli.StringSliceFlag{
+var scriptFlag = &cli.StringSliceFlag{
 	Name:  "script",
-	Usage: fmt.Sprintf("[One of port/script Required] The path to script that will be run. Specify one or more times. Example: \"/usr/local/bin/health-check.sh --http-port 8000\""),
+	Usage: "[One of port/script Required] The path to script that will be run. Specify one or more times. Example: \"/usr/local/bin/health-check.sh --http-port 8000\"",
 }
 
-var scriptTimeoutFlag = cli.IntFlag{
+var scriptTimeoutFlag = &cli.IntFlag{
 	Name:  "script-timeout",
-	Usage: fmt.Sprintf("[Optional] Timeout, in seconds, to wait for the scripts to complete. Example: 10"),
+	Usage: "[Optional] Timeout, in seconds, to wait for the scripts to complete. Example: 10",
 	Value: DEFAULT_SCRIPT_TIMEOUT_SEC,
 }
 
-var singleflightFlag = cli.BoolFlag{
-	Name:  "singleflight",
-	Usage: fmt.Sprintf("[Optional] Enable singleflight mode, which makes concurrent requests share the same check."),
+var httpReadTimeoutFlag = &cli.IntFlag{
+	Name:  "http-read-timeout",
+	Usage: "[Optional] Timeout, in seconds, for reading the entire HTTP request, including the body. Example: 5",
+	Value: 5,
 }
 
-var listenerFlag = cli.StringFlag{
+var httpWriteTimeoutFlag = &cli.IntFlag{
+	Name:  "http-write-timeout",
+	Usage: "[Optional] Timeout, in seconds, for writing the HTTP response. Dynamically scales with script timeout + 5 if set to 0. Example: 15",
+	Value: 0,
+}
+
+var httpIdleTimeoutFlag = &cli.IntFlag{
+	Name:  "http-idle-timeout",
+	Usage: "[Optional] Timeout, in seconds, to wait for the next request when keep-alives are enabled. Example: 15",
+	Value: 15,
+}
+
+var tcpDialTimeoutFlag = &cli.IntFlag{
+	Name:  "tcp-dial-timeout",
+	Usage: "[Optional] Timeout, in seconds, for dialing TCP connections for health checks. Example: 5",
+	Value: 5,
+}
+
+var singleflightFlag = &cli.BoolFlag{
+	Name:  "singleflight",
+	Usage: "[Optional] Enable singleflight mode, which makes concurrent requests share the same check.",
+}
+
+var detailedStatusFlag = &cli.BoolFlag{
+	Name:  "detailed-status",
+	Usage: "[Optional] Return a detailed JSON payload indicating elapsed time and specific error messages if probes fail.",
+}
+
+var listenerFlag = &cli.StringFlag{
 	Name:  "listener",
-	Usage: fmt.Sprintf("[Optional] The IP address and port on which inbound HTTP connections will be accepted."),
+	Usage: "[Optional] The IP address and port on which inbound HTTP connections will be accepted.",
 	Value: fmt.Sprintf("%s:%d", DEFAULT_LISTENER_IP_ADDRESS, DEFAULT_LISTENER_PORT),
 }
 
-var logLevelFlag = cli.StringFlag{
+var logLevelFlag = &cli.StringFlag{
 	Name:  "log-level",
 	Usage: fmt.Sprintf("[Optional] Set the log level to `LEVEL`. Must be one of: %v", logrus.AllLevels),
 	Value: logrus.InfoLevel.String(),
@@ -53,6 +82,11 @@ var defaultFlags = []cli.Flag{
 	portFlag,
 	scriptFlag,
 	scriptTimeoutFlag,
+	detailedStatusFlag,
+	httpReadTimeoutFlag,
+	httpWriteTimeoutFlag,
+	httpIdleTimeoutFlag,
+	tcpDialTimeoutFlag,
 	singleflightFlag,
 	listenerFlag,
 	logLevelFlag,
@@ -60,49 +94,68 @@ var defaultFlags = []cli.Flag{
 
 // Return true if no options at all were passed to the CLI. Note that we are specifically testing for flags, some of which
 // are required, not just args.
-func allCliOptionsEmpty(cliContext *cli.Context) bool {
-	return cliContext.NumFlags() == 0
+func allCliOptionsEmpty(cmd *cli.Command) bool {
+	return cmd.NumFlags() == 0
 }
 
-// Parse and validate all CLI options
-func parseOptions(cliContext *cli.Context) (*options.Options, error) {
-	logger := logging.GetLogger("health-checker")
+// parseOptions processes the user-provided CLI arguments from the urfave/cli/v3 Context.
+// It maps these inputs to the internal Options struct, configuring loggers, translating
+// string slices into domain objects (like Scripts), and validating that at least one
+// check strategy (port or script) was requested.
+func parseOptions(cmd *cli.Command) (*options.Options, error) {
+	logger := logging.GetLogger("health-checker", "v0.0.0")
 
 	// By default logrus logs to stderr. But since most output in this tool is informational, we default to stdout.
-	logger.Out = os.Stdout
+	logger.Logger.Out = os.Stdout
 
-	logLevel := cliContext.String(logLevelFlag.Name)
+	logLevel := cmd.String(logLevelFlag.Name)
 	level, err := logrus.ParseLevel(logLevel)
 	if err != nil {
 		return nil, InvalidLogLevel(logLevel)
 	}
-	logger.SetLevel(level)
+	logger.Logger.SetLevel(level)
 
-	ports := cliContext.IntSlice("port")
+	ports := make([]int, 0)
+	for _, p := range cmd.IntSlice("port") {
+		ports = append(ports, int(p))
+	}
 
-	scriptArr := cliContext.StringSlice("script")
-	scripts := options.ParseScripts(scriptArr)
+	scriptArr := cmd.StringSlice("script")
+	scripts, err := options.ParseScripts(scriptArr)
+	if err != nil {
+		return nil, err
+	}
 
 	if len(ports) == 0 && len(scripts) == 0 {
 		return nil, OneOfParamsRequired{portFlag.Name, scriptFlag.Name}
 	}
 
-	singleflight := cliContext.Bool("singleflight")
+	singleflight := cmd.Bool("singleflight")
+	detailedStatus := cmd.Bool("detailed-status")
 
-	scriptTimeout := cliContext.Int("script-timeout")
+	scriptTimeout := int(cmd.Int("script-timeout"))
+	httpReadTimeout := int(cmd.Int("http-read-timeout"))
+	httpWriteTimeout := int(cmd.Int("http-write-timeout"))
+	httpIdleTimeout := int(cmd.Int("http-idle-timeout"))
+	tcpDialTimeout := int(cmd.Int("tcp-dial-timeout"))
 
-	listener := cliContext.String("listener")
+	listener := cmd.String("listener")
 	if listener == "" {
 		return nil, MissingParam(listenerFlag.Name)
 	}
 
 	return &options.Options{
-		Ports:         ports,
-		Scripts:       scripts,
-		ScriptTimeout: scriptTimeout,
-		Singleflight:  singleflight,
-		Listener:      listener,
-		Logger:        logger,
+		Ports:            ports,
+		Scripts:          scripts,
+		ScriptTimeout:    scriptTimeout,
+		HttpReadTimeout:  httpReadTimeout,
+		HttpWriteTimeout: httpWriteTimeout,
+		HttpIdleTimeout:  httpIdleTimeout,
+		TcpDialTimeout:   tcpDialTimeout,
+		Singleflight:     singleflight,
+		DetailedStatus:   detailedStatus,
+		Listener:         listener,
+		Logger:           logger.Logger,
 	}, nil
 }
 
