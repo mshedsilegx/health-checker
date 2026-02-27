@@ -1,8 +1,0 @@
-time="2026-02-26T22:11:03-06:00" level=info msg="Listening on Port 0.0.0.0:5001..."
-time="2026-02-26T22:11:05-06:00" level=info msg="Received inbound request. Beginning health checks..."
-time="2026-02-26T22:11:05-06:00" level=info msg="Attempting to perform HTTP check to https://httpbin.org/get..."
-time="2026-02-26T22:11:05-06:00" level=info msg="Attempting to perform HTTP check to https://httpbin.org/status/200..."
-time="2026-02-26T22:11:05-06:00" level=info msg="HTTP check to https://httpbin.org/status/200 successful"
-time="2026-02-26T22:11:05-06:00" level=warning msg="HTTP check to https://httpbin.org/get FAILED: HTTP response body did not match verify-payload regex 'dummy'"
-time="2026-02-26T22:11:05-06:00" level=info msg="At least one health check failed. Returning HTTP 504 response.\n"
-exit status 0xffffffff
